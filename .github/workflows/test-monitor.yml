@@ -11,15 +11,21 @@ jobs:
     - name: 1. Checkout
       uses: actions/checkout@v4
 
-    - name: 2. Open Camera and Take Photo
+    - name: 2. Open Camera Maximize and Take Photo
       run: |
         Write-Host "START CAMERA"
-        # 1. カメラアプリを起動
         powershell -Command "start microsoft.windows.camera:"
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 3
+        
+        Write-Host "MAXIMIZE WINDOW"
+        # カメラアプリのウィンドウを画面いっぱいに最大化する命令
+        $wshell = New-Object -ComObject Wscript.Shell
+        $wshell.AppActivate("カメラ")
+        Start-Sleep -Seconds 1
+        $wshell.SendKeys("%~") # Alt + Enter で全画面化
+        Start-Sleep -Seconds 3
         
         Write-Host "TAKE PHOTO"
-        # 2. 自動でパシャリと画面（カメラ映像）をキャプチャして保存するWindowsの魔法
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
         $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -27,12 +33,9 @@ jobs:
         $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
         $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
         
-        # 3. パソコンの「ピクチャ」フォルダに保存
         $path = [System.IO.Path]::Combine([Environment]::GetFolderPath('MyPictures'), 'negi_photo.png')
         $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
         
-        # 後片付け
         $graphic.Dispose()
         $bitmap.Dispose()
-        powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction Ignore"
-        Write-Host "SUCCESS: PHOTO SAVED IN PICTURES FOLDER"
+        Write-Host "SUCCESS: FULLSIZE PHOTO SAVED"
