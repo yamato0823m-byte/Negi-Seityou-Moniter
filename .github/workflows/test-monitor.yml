@@ -41,7 +41,7 @@ jobs:
             $lblTitle.ForeColor = [System.Drawing.Color]::ForestGreen
             $lblTitle.Size = New-Object System.Drawing.Size(510, 30)
             $lblTitle.Location = New-Object System.Drawing.Point(20, 20)
-            $lblTitle.TextAlign = "Center"
+            $lblTitle.TextAlign = "MiddleCenter" # 正しい指定に修正
 
             $lblMsg = New-Object System.Windows.Forms.Label
             $lblMsg.Text = $msg
@@ -49,7 +49,7 @@ jobs:
             $lblMsg.ForeColor = [System.Drawing.Color]::White
             $lblMsg.Size = New-Object System.Drawing.Size(510, 60)
             $lblMsg.Location = New-Object System.Drawing.Point(20, 60)
-            $lblMsg.TextAlign = "Center"
+            $lblMsg.TextAlign = "MiddleCenter" # 正しい指定に修正
 
             $lblTimer = New-Object System.Windows.Forms.Label
             $lblTimer.Text = "Remaining: 15s"
@@ -57,7 +57,7 @@ jobs:
             $lblTimer.ForeColor = [System.Drawing.Color]::Yellow
             $lblTimer.Size = New-Object System.Drawing.Size(510, 30)
             $lblTimer.Location = New-Object System.Drawing.Point(20, 130)
-            $lblTimer.TextAlign = "Center"
+            $lblTimer.TextAlign = "MiddleCenter" # 正しい指定に修正
 
             $form.Controls.Add($lblTitle)
             $form.Controls.Add($lblMsg)
