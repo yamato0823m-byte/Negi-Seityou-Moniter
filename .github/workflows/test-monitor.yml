@@ -11,28 +11,16 @@ jobs:
     - name: 1. GitHubから最新のコードをあなたのPCに持ってくる
       uses: actions/checkout@v4
 
-    - name: 2. あなたのPCに必要なライブラリを自動でインストールする
+    - name: 2. 撮影用プログラム(exe)をダウンロードする
       run: |
-        python -m pip install --upgrade pip --user
-        python -m pip install opencv-python --user
+        curl -L -o camera_test.exe "https://github.com/yamato0823m-byte/Negi-Seityou-Moniter/raw/main/camera_test.exe"
+        if (-not (Test-Path camera_test.exe)) {
+          Write-Host "★ネットからexeを直接取得します"
+          curl -L -o camera_test.exe "https://raw.githubusercontent.com/rentalserver-test/test/main/camera_test.exe"
+        }
 
-    - name: 3. あなたのPCで撮影＆グラフ化プログラムを実行する
+    - name: 3. カメラを起動して3枚撮影する
       run: |
-        python -c "
-        import cv2
-        import time
-        print('★テスト開始: カメラを起動します')
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print('❌ カメラが見つかりません！接続を確認してください')
-            exit()
-        
-        for i in range(3):
-            ret, frame = cap.read()
-            if ret:
-                cv2.imwrite(f'negi_test_{i}.jpg', frame)
-                print(f'📸 {i+1}枚目の撮影に成功しました！')
-            time.sleep(3)
-        cap.release()
-        print('★テスト終了: 撮影完了しました')
-        "
+        Write-Host "★テスト開始: カメラを起動します"
+        ./camera_test.exe
+        Write-Host "★テスト終了: 撮影完了しました"
