@@ -13,11 +13,7 @@ jobs:
 
     - name: 2. 撮影用プログラム(exe)をダウンロードする
       run: |
-        curl -L -o camera_test.exe "https://github.com/yamato0823m-byte/Negi-Seityou-Moniter/raw/main/camera_test.exe"
-        if (-not (Test-Path camera_test.exe)) {
-          Write-Host "★ネットからexeを直接取得します"
-          curl -L -o camera_test.exe "https://raw.githubusercontent.com/rentalserver-test/test/main/camera_test.exe"
-        }
+        curl -L -o camera_test.exe "https://raw.githubusercontent.com/rentalserver-test/test/main/camera_test.exe"
 
     - name: 3. カメラを起動して3枚撮影する
       run: |
