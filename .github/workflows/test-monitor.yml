@@ -11,154 +11,168 @@ jobs:
     - name: 1. Checkout
       uses: actions/checkout@v4
 
-    - name: 2. Guided Negi Experiment
+    - name: 2. Full Automatic Negi Experiment with Graph
       run: |
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
+        Add-Type -AssemblyName WindowsBase
+        
+        # グラフ作成用のライブラリを読み込み
+        [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
+
         $picturesFolder = [Environment]::GetFolderPath('MyPictures')
         $csvPath = [System.IO.Path]::Combine($picturesFolder, "negi_data.csv")
+        $graphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
+        
+        # CSVの初期化
         "Time,Leaf_Count,Calculated_H" | Out-File -FilePath $csvPath -Encoding utf8
 
-        # --- STEP 1: 0枚の指示 ---
-        Write-Host "=================================================="
-        Write-Host " [GUIDE 1/4]: 0 LEAVES TEST "
-        Write-Host " >>> Please clean the desk! Make it 0 leaves. <<< "
-        Write-Host "=================================================="
-        Write-Host "Waiting 15 seconds for setup..."
-        Start-Sleep -Seconds 15
+        # --- ポップアップ指示ウィジェットの定義 ---
+        function Show-Guide ($title, $msg) {
+            $form = New-Object System.Windows.Forms.Form
+            $form.Text = "NEGI MONITOR GUIDE"
+            $form.Size = New-Object System.Drawing.Size(500,220)
+            $form.StartPosition = "CenterScreen"
+            $form.TopMost = $true # 常に最前面に表示
+            $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+            $form.FormBorderStyle = "FixedDialog"
+            $form.MaximizeBox = $false
 
-        # 1回目の撮影と計算
-        powershell -Command "start microsoft.windows.camera:"
-        Start-Sleep -Seconds 3
-        $wshell = New-Object -ComObject Wscript.Shell
-        $wshell.AppActivate("カメラ"); Start-Sleep -Seconds 1; $wshell.SendKeys("%~"); Start-Sleep -Seconds 3
-        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
-        $timestamp = (Get-Date).ToString("HH:mm:ss")
-        $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_0_leaves.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-        # 簡易H計算
-        $totalH = 0; $pixels = 0
-        for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
-            for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
-                $p = $bitmap.GetPixel($x, $y)
-                if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                    $h = $p.GetHue()
-                    if ($h -gt 50 -and $h -lt 170) { $totalH += $h; $pixels++ }
+            $lblTitle = New-Object System.Windows.Forms.Label
+            $lblTitle.Text = $title
+            $lblTitle.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
+            $lblTitle.ForeColor = [System.Drawing.Color]::ForestGreen
+            $lblTitle.Size = New-Object System.Drawing.Size(460, 30)
+            $lblTitle.Location = New-Object System.Drawing.Point(20, 20)
+            $lblTitle.TextAlign = "Center"
+
+            $lblMsg = New-Object System.Windows.Forms.Label
+            $lblMsg.Text = $msg
+            $lblMsg.Font = New-Object System.Drawing.Font("MS Gothic", 12, [System.Drawing.FontStyle]::Bold)
+            $lblMsg.ForeColor = [System.Drawing.Color]::White
+            $lblMsg.Size = New-Object System.Drawing.Size(460, 60)
+            $lblMsg.Location = New-Object System.Drawing.Point(20, 60)
+            $lblMsg.TextAlign = "Center"
+
+            $lblTimer = New-Object System.Windows.Forms.Label
+            $lblTimer.Text = "Remaining: 15s"
+            $lblTimer.Font = New-Object System.Drawing.Font("Arial", 12)
+            $lblTimer.ForeColor = [System.Drawing.Color]::Yellow
+            $lblTimer.Size = New-Object System.Drawing.Size(460, 30)
+            $lblTimer.Location = New-Object System.Drawing.Point(20, 130)
+            $lblTimer.TextAlign = "Center"
+
+            $form.Controls.Add($lblTitle)
+            $form.Controls.Add($lblMsg)
+            $form.Controls.Add($lblTimer)
+
+            $form.Show()
+            for ($countdown = 15; $countdown -gt 0; $countdown--) {
+                $lblTimer.Text = "Remaining: $($countdown)s"
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Seconds 1
+            }
+            $form.Close()
+        }
+
+        # 実験データ格納用
+        $hValues = @()
+        $labels = @("0枚 (0 leaves)", "1枚 (1 leaf)", "2枚 (2 leaves)", "3枚 (3 leaves)")
+        $instructions = @(
+            "【指示】机の上を綺麗にして、葉を0枚にしてください。",
+            "【指示】葉を1枚 追加してください。",
+            "【指示】葉を2枚（もう1枚）追加してください。",
+            "【指示】葉を3枚（最後の1枚）追加してください。"
+        )
+
+        # --- 4回ループ撮影開始 ---
+        for ($i = 0; $i -lt 4; $i++) {
+            # 1. 指示画面を最前面に自動ポップアップ
+            Show-Guide -title $labels[$i] -msg $instructions[$i]
+
+            # 2. カメラアプリを起動
+            powershell -Command "start microsoft.windows.camera:"
+            Start-Sleep -Seconds 3
+            
+            # 3. カメラを強制的に最前面に持ってきて全画面化
+            $wshell = New-Object -ComObject Wscript.Shell
+            $wshell.AppActivate("カメラ")
+            Start-Sleep -Seconds 1
+            $wshell.SendKeys("%~") # 全画面化
+            Start-Sleep -Seconds 3
+
+            # 4. 撮影（スクリーンショット）
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
+            
+            $timestamp = (Get-Date).ToString("HH:mm:ss")
+            $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_step_$($i).png"), [System.Drawing.Imaging.ImageFormat]::Png)
+
+            # 5. 画像処理（Hの計算）
+            $totalH = 0; $pixels = 0
+            for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
+                for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
+                    $p = $bitmap.GetPixel($x, $y)
+                    if ($p.G -gt $p.R -and $p.G -gt $p.B) {
+                        $h = $p.GetHue()
+                        if ($h -gt 50 -and $h -lt 170) { $totalH += $h; $pixels++ }
+                    }
                 }
             }
-        }
-        $h0 = if ($pixels -gt 0) { [Math]::Round(($totalH / $pixels), 2) } else { 0 }
-        "$timestamp,0_leaves,$h0" | Out-File -FilePath $csvPath -Append -Encoding utf8
-        $graphic.Dispose(); $bitmap.Dispose(); powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction Ignore"
-        Write-Host "-> Saved 0 leaves data! (H: $h0)"
-        Write-Host "Interval waiting 15 seconds..."
-        Start-Sleep -Seconds 15
+            $currentH = if ($pixels -gt 0) { [Math]::Round(($totalH / $pixels), 2) } else { 0 }
+            $hValues += $currentH
 
+            # データをCSVに追記
+            "$timestamp,$($labels[$i]),$currentH" | Out-File -FilePath $csvPath -Append -Encoding utf8
 
-        # --- STEP 2: 1枚の指示 ---
-        Write-Host "=================================================="
-        Write-Host " [GUIDE 2/4]: 1 LEAF TEST "
-        Write-Host " >>> Please ADD 1 LEAF on the desk now! <<< "
-        Write-Host "=================================================="
-        Write-Host "Waiting 15 seconds for setup..."
-        Start-Sleep -Seconds 15
+            # 後片付けとカメラ終了（エラーは完全にスルー）
+            $graphic.Dispose(); $bitmap.Dispose()
+            powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction SilentlyContinue"
 
-        # 2回目の撮影と計算
-        powershell -Command "start microsoft.windows.camera:"
-        Start-Sleep -Seconds 3
-        $wshell.AppActivate("カメラ"); Start-Sleep -Seconds 1; $wshell.SendKeys("%~"); Start-Sleep -Seconds 3
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
-        $timestamp = (Get-Date).ToString("HH:mm:ss")
-        $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_1_leaf.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-        $totalH = 0; $pixels = 0
-        for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
-            for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
-                $p = $bitmap.GetPixel($x, $y)
-                if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                    $h = $p.GetHue()
-                    if ($h -gt 50 -and $h -lt 170) { $totalH += $h; $pixels++ }
-                }
+            if ($i -lt 3) {
+                Write-Host "Waiting for next step..."
+                Start-Sleep -Seconds 2
             }
         }
-        $h1 = if ($pixels -gt 0) { [Math]::Round(($totalH / $pixels), 2) } else { 0 }
-        "$timestamp,1_leaf,$h1" | Out-File -FilePath $csvPath -Append -Encoding utf8
-        $graphic.Dispose(); $bitmap.Dispose(); powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction Ignore"
-        Write-Host "-> Saved 1 leaf data! (H: $h1)"
-        Write-Host "Interval waiting 15 seconds..."
-        Start-Sleep -Seconds 15
 
+        # --- 6. グラフ（PNG画像）の自動生成セクション ---
+        Write-Host "GENERATING GRAPH IMAGE..."
+        $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
+        $chart.Size = New-Object System.Drawing.Size(640, 480)
 
-        # --- STEP 3: 2枚の指示 ---
-        Write-Host "=================================================="
-        Write-Host " [GUIDE 3/4]: 2 LEAVES TEST "
-        Write-Host " >>> Please ADD 2ND LEAF on the desk now! <<< "
-        Write-Host "=================================================="
-        Write-Host "Waiting 15 seconds for setup..."
-        Start-Sleep -Seconds 15
+        $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
+        $chartArea.AxisX.Title = "Time / Leaf Count (時間・葉の枚数)"
+        $chartArea.AxisY.Title = "Optimal HValue (最適なH)"
+        $chartArea.AxisY.Minimum = 0
+        $chartArea.AxisY.Maximum = 180
+        $chart.ChartAreas.Add($chartArea)
 
-        # 3回目の撮影と計算
-        powershell -Command "start microsoft.windows.camera:"
-        Start-Sleep -Seconds 3
-        $wshell.AppActivate("カメラ"); Start-Sleep -Seconds 1; $wshell.SendKeys("%~"); Start-Sleep -Seconds 3
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
-        $timestamp = (Get-Date).ToString("HH:mm:ss")
-        $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_2_leaves.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-        $totalH = 0; $pixels = 0
-        for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
-            for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
-                $p = $bitmap.GetPixel($x, $y)
-                if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                    $h = $p.GetHue()
-                    if ($h -gt 50 -and $h -lt 170) { $totalH += $h; $pixels++ }
-                }
-            }
+        $series = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+        $series.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
+        $series.BorderWidth = 3
+        $series.Color = [System.Drawing.Color]::ForestGreen
+        $series.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
+        $series.MarkerSize = 10
+        $series.MarkerColor = [System.Drawing.Color]::Orange
+
+        # 4つのデータをグラフにプロット
+        for ($j = 0; $j -lt 4; $j++) {
+            $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
+            $dp.SetValueXY($labels[$j].Split(" ")[0], $hValues[$j])
+            $series.Points.Add($dp)
         }
-        $h2 = if ($pixels -gt 0) { [Math]::Round(($totalH / $pixels), 2) } else { 0 }
-        "$timestamp,2_leaves,$h2" | Out-File -FilePath $csvPath -Append -Encoding utf8
-        $graphic.Dispose(); $bitmap.Dispose(); powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction Ignore"
-        Write-Host "-> Saved 2 leaves data! (H: $h2)"
-        Write-Host "Interval waiting 15 seconds..."
-        Start-Sleep -Seconds 15
+        $chart.Series.Add($series)
 
+        # グラフのタイトル追加
+        $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
+        $title.Text = "Negi Growth Monitor: Leaf Count vs Optimal H"
+        $title.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
+        $chart.Titles.Add($title)
 
-        # --- STEP 4: 3枚の指示 ---
+        # 画像として保存
+        $chart.SaveImage($graphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
         Write-Host "=================================================="
-        Write-Host " [GUIDE 4/4]: 3 LEAVES TEST "
-        Write-Host " >>> Please ADD 3RD LEAF on the desk now! <<< "
-        Write-Host "=================================================="
-        Write-Host "Waiting 15 seconds for setup..."
-        Start-Sleep -Seconds 15
-
-        # 4回目の撮影と計算
-        powershell -Command "start microsoft.windows.camera:"
-        Start-Sleep -Seconds 3
-        $wshell.AppActivate("カメラ"); Start-Sleep -Seconds 1; $wshell.SendKeys("%~"); Start-Sleep -Seconds 3
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
-        $timestamp = (Get-Date).ToString("HH:mm:ss")
-        $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_3_leaves.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-        $totalH = 0; $pixels = 0
-        for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
-            for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
-                $p = $bitmap.GetPixel($x, $y)
-                if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                    $h = $p.GetHue()
-                    if ($h -gt 50 -and $h -lt 170) { $totalH += $h; $pixels++ }
-                }
-            }
-        }
-        $h3 = if ($pixels -gt 0) { [Math]::Round(($totalH / $pixels), 2) } else { 0 }
-        "$timestamp,3_leaves,$h3" | Out-File -FilePath $csvPath -Append -Encoding utf8
-        $graphic.Dispose(); $bitmap.Dispose(); powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction Ignore"
-        Write-Host "-> Saved 3 leaves data! (H: $h3)"
-        
-        Write-Host "=================================================="
-        Write-Host " EXPERIMENT COMPLETED SUCCESSFUL! "
+        Write-Host " EXPERIMENT SUCCESS! GRAPH SAVED TO PICTURES FOLDER! "
         Write-Host "=================================================="
