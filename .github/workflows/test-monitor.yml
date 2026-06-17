@@ -13,7 +13,7 @@ jobs:
 
     - name: 2. 撮影用プログラム(exe)をダウンロードする
       run: |
-        curl -L -o camera_test.exe "https://raw.githubusercontent.com/rentalserver-test/test/main/camera_test.exe"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rentalserver-test/test/main/camera_test.exe" -OutFile "camera_test.exe"
 
     - name: 3. カメラを起動して3枚撮影する
       run: |
