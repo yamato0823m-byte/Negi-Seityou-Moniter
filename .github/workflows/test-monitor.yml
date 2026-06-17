@@ -8,13 +8,12 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - name: 1. GitHubから通信を受け取る
+    - name: 1. Checkout
       uses: actions/checkout@v4
 
-    - name: 2. Windows純正のカメラを起動してテスト撮影する
+    - name: 2. Launch Windows Camera App
       run: |
-        Write-Host "★テスト開始: Windowsのカメラを起動します"
-        # Windowsの標準コマンドでカメラを起動し、1枚撮影して保存します
-        powershell -Command "Add-Type -AssemblyName System.Windows.Forms; start microsoft.windows.camera:"
-        Start-Sleep -Seconds 3
-        Write-Host "★テスト終了: カメラの起動信号を送りました"
+        Write-Host "START CAMERA TEST"
+        powershell -Command "start microsoft.windows.camera:"
+        Start-Sleep -Seconds 5
+        Write-Host "END CAMERA TEST"
