@@ -11,7 +11,7 @@ jobs:
     - name: 1. Checkout
       uses: actions/checkout@v4
 
-    - name: 2. Full Automatic Negi Experiment with Graph
+    - name: 2. Realtime Graph and Guided Experiment 5steps
       run: |
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
@@ -22,13 +22,57 @@ jobs:
         $csvPath = [System.IO.Path]::Combine($picturesFolder, "negi_data.csv")
         $graphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
         
+        # CSVの初期化
         "Time,Leaf_Count,Calculated_H" | Out-File -FilePath $csvPath -Encoding utf8
 
-        # --- English Guide Widget ---
-        function Show-Guide ($title, $msg) {
+        # --- リアルタイムにグラフ画像を生成・更新する関数 ---
+        function Update-GraphImage ($currentLabels, $currentHValues) {
+            try {
+                $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
+                $chart.Size = New-Object System.Drawing.Size(500, 300)
+
+                $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
+                $chartArea.AxisX.Title = "Leaf Count"
+                $chartArea.AxisY.Title = "Optimal H"
+                $chartArea.AxisY.Minimum = 0
+                $chartArea.AxisY.Maximum = 180
+                $chart.ChartAreas.Add($chartArea)
+
+                $series = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+                $series.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
+                $series.BorderWidth = 4
+                $series.Color = [System.Drawing.Color]::ForestGreen
+                $series.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
+                $series.MarkerSize = 12
+                $series.MarkerColor = [System.Drawing.Color]::Orange
+                $chart.Series.Add($series)
+
+                # 現在あるデータだけをプロット
+                for ($j = 0; $j -lt $currentLabels.Count; $j++) {
+                    $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
+                    $dp.SetValueXY($currentLabels[$j].Split(" ")[0], $currentHValues[$j])
+                    $series.Points.Add($dp)
+                }
+
+                $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
+                $title.Text = "Realtime Data (H Value)"
+                $title.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
+                $chart.Titles.Add($title)
+
+                $chart.SaveImage($graphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
+                $chart.Dispose()
+            } catch {}
+        }
+
+        # --- グラフ付きポップアップ指示画面 ---
+        function Show-Guide ($title, $msg, $showGraph) {
             $form = New-Object System.Windows.Forms.Form
-            $form.Text = "NEGI MONITOR GUIDE"
-            $form.Size = New-Object System.Drawing.Size(550,220)
+            $form.Text = "NEGI MONITOR REALTIME MONITOR"
+            if ($showGraph) {
+                $form.Size = New-Object System.Drawing.Size(550, 560)
+            } else {
+                $form.Size = New-Object System.Drawing.Size(550, 220)
+            }
             $form.StartPosition = "CenterScreen"
             $form.TopMost = $true
             $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
@@ -41,26 +85,41 @@ jobs:
             $lblTitle.ForeColor = [System.Drawing.Color]::ForestGreen
             $lblTitle.Size = New-Object System.Drawing.Size(510, 30)
             $lblTitle.Location = New-Object System.Drawing.Point(20, 20)
-            $lblTitle.TextAlign = "MiddleCenter" # 正しい指定に修正
+            $lblTitle.TextAlign = "MiddleCenter"
+            $form.Controls.Add($lblTitle)
 
             $lblMsg = New-Object System.Windows.Forms.Label
             $lblMsg.Text = $msg
             $lblMsg.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
             $lblMsg.ForeColor = [System.Drawing.Color]::White
-            $lblMsg.Size = New-Object System.Drawing.Size(510, 60)
+            $lblMsg.Size = New-Object System.Drawing.Size(510, 50)
             $lblMsg.Location = New-Object System.Drawing.Point(20, 60)
-            $lblMsg.TextAlign = "MiddleCenter" # 正しい指定に修正
+            $lblMsg.TextAlign = "MiddleCenter"
+            $form.Controls.Add($lblMsg)
+
+            if ($showGraph -and (Test-Path $graphPath)) {
+                $pictureBox = New-Object System.Windows.Forms.PictureBox
+                $pictureBox.Size = New-Object System.Drawing.Size(500, 300)
+                $pictureBox.Location = New-Object System.Drawing.Point(20, 120)
+                $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::StretchImage
+                
+                $bytes = [System.IO.File]::ReadAllBytes($graphPath)
+                $ms = New-Object System.IO.MemoryStream(,$bytes)
+                $pictureBox.Image = [System.Drawing.Image]::FromStream($ms)
+                $form.Controls.Add($pictureBox)
+                
+                $timerY = 440
+            } else {
+                $timerY = 130
+            }
 
             $lblTimer = New-Object System.Windows.Forms.Label
             $lblTimer.Text = "Remaining: 15s"
             $lblTimer.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
             $lblTimer.ForeColor = [System.Drawing.Color]::Yellow
             $lblTimer.Size = New-Object System.Drawing.Size(510, 30)
-            $lblTimer.Location = New-Object System.Drawing.Point(20, 130)
-            $lblTimer.TextAlign = "MiddleCenter" # 正しい指定に修正
-
-            $form.Controls.Add($lblTitle)
-            $form.Controls.Add($lblMsg)
+            $lblTimer.Location = New-Object System.Drawing.Point(20, $timerY)
+            $lblTimer.TextAlign = "MiddleCenter"
             $form.Controls.Add($lblTimer)
 
             $form.Show()
@@ -70,19 +129,27 @@ jobs:
                 Start-Sleep -Seconds 1
             }
             $form.Close()
+            $form.Dispose()
         }
 
+        # --- 0枚〜4枚（合計5データ）の設定に変形 ---
         $hValues = @()
-        $labels = @("0 Leaves Test", "1 Leaf Test", "2 Leaves Test", "3 Leaves Test")
+        $doneLabels = @()
+        $labels = @("0 Leaves Test", "1 Leaf Test", "2 Leaves Test", "3 Leaves Test", "4 Leaves Test")
         $instructions = @(
             "Please clean the desk! Make it 0 leaves.",
             "Please ADD 1 leaf on the desk now!",
             "Please ADD 2nd leaf on the desk now!",
-            "Please ADD 3rd leaf on the desk now!"
+            "Please ADD 3rd leaf on the desk now!",
+            "Please ADD 4th leaf on the desk now!"
         )
 
-        for ($i = 0; $i -lt 4; $i++) {
-            Show-Guide -title $labels[$i] -msg $instructions[$i]
+        if (Test-Path $graphPath) { Remove-Item $graphPath -Force -ErrorAction SilentlyContinue }
+
+        # 5回ループ撮影（0, 1, 2, 3, 4）
+        for ($i = 0; $i -lt 5; $i++) {
+            $showGraphFlag = $i -gt 0
+            Show-Guide -title $labels[$i] -msg $instructions[$i] -showGraph $showGraphFlag
 
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
@@ -112,47 +179,23 @@ jobs:
                 }
             }
             $currentH = if ($pixels -gt 0) { [Math]::Round(($totalH / $pixels), 2) } else { 0 }
+            
             $hValues += $currentH
+            $doneLabels += $labels[$i]
 
             "$timestamp,$($labels[$i]),$currentH" | Out-File -FilePath $csvPath -Append -Encoding utf8
 
             $graphic.Dispose(); $bitmap.Dispose()
             powershell -Command "Stop-Process -Name 'Camera' -Force -ErrorAction SilentlyContinue"
 
-            if ($i -lt 3) {
+            Update-GraphImage -currentLabels $doneLabels -currentHValues $hValues
+
+            if ($i -lt 4) {
                 Start-Sleep -Seconds 2
             }
         }
 
-        # --- Generate Graph ---
-        $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
-        $chart.Size = New-Object System.Drawing.Size(640, 480)
-
-        $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
-        $chartArea.AxisX.Title = "Leaf Count"
-        $chartArea.AxisY.Title = "Optimal H"
-        $chartArea.AxisY.Minimum = 0
-        $chartArea.AxisY.Maximum = 180
-        $chart.ChartAreas.Add($chartArea)
-
-        $series = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-        $series.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
-        $series.BorderWidth = 3
-        $series.Color = [System.Drawing.Color]::ForestGreen
-        $series.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
-        $series.MarkerSize = 10
-        $series.MarkerColor = [System.Drawing.Color]::Orange
-
-        for ($j = 0; $j -lt 4; $j++) {
-            $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
-            $dp.SetValueXY($labels[$j], $hValues[$j])
-            $series.Points.Add($dp)
-        }
-        $chart.Series.Add($series)
-
-        $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-        $title.Text = "Negi Growth Monitor: Leaf Count vs Optimal H"
-        $title.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
-        $chart.Titles.Add($title)
-
-        $chart.SaveImage($graphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
+        # --- 最終結果発表画面（5つのデータが揃った完成版グラフを最前面に表示） ---
+        try {
+            Show-Guide -title "EXPERIMENT COMPLETED!" -msg "Check 'negi_graph.png' in Pictures folder." -showGraph $true
+        } catch {}
