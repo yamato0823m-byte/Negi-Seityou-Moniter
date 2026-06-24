@@ -169,13 +169,14 @@ jobs:
             $timestamp = (Get-Date).ToString("HH:mm:ss")
             $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_step_$($i).png"), [System.Drawing.Imaging.ImageFormat]::Png)
 
-            # --- 画素数のカウント処理（エラー回避用に判定式を確実に格納） ---
+            # --- 画素数のカウント処理（間引きなし・全画素探索モードに改造） ---
             $greenPixels = 0
             $minH = 50
             $maxH = 170
             
-            for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
-                for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
+            # xとyのステップを「+= 15」から「++ (1ずつ)」に修正し、全ピクセルをスキャン
+            for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x++) {
+                for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y++) {
                     $p = $bitmap.GetPixel($x, $y)
                     if ($p.G -gt $p.R -and $p.G -gt $p.B) {
                         $h = $p.GetHue()
