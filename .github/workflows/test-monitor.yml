@@ -11,7 +11,7 @@ jobs:
     - name: 1. Checkout
       uses: actions/checkout@v4
 
-    - name: 2. Save Each Graph and Safely Finish Experiment
+    - name: 2. Advanced Growth Curve Monitor
       run: |
         $ErrorActionPreference = "SilentlyContinue"
         Add-Type -AssemblyName System.Windows.Forms
@@ -20,56 +20,18 @@ jobs:
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
         $picturesFolder = [Environment]::GetFolderPath('MyPictures')
-        $csvPath = [System.IO.Path]::Combine($picturesFolder, "negi_data.csv")
-        $latestGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
+        $csvPath = [System.IO.Path]::Combine($picturesFolder, "negi_growth_log.csv")
         
-        "Time,Leaf_Count,Green_Pixel_Count" | Out-File -FilePath $csvPath -Encoding utf8
-
-        # --- グラフ画像を生成・保存する関数 ---
-        function Update-GraphImage ($currentLabels, $currentPixels, $stepIndex) {
-            try {
-                $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
-                $chart.Size = New-Object System.Drawing.Size(500, 300)
-
-                $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
-                $chartArea.AxisX.Title = "Leaf Count"
-                $chartArea.AxisY.Title = "Green Pixel Count"
-                $chartArea.AxisY.Minimum = 0
-                $chart.ChartAreas.Add($chartArea)
-
-                $series = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-                $series.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
-                $series.BorderWidth = 4
-                $series.Color = [System.Drawing.Color]::ForestGreen
-                $series.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
-                $series.MarkerSize = 12
-                $series.MarkerColor = [System.Drawing.Color]::Orange
-                $chart.Series.Add($series)
-
-                for ($j = 0; $j -lt $currentLabels.Count; $j++) {
-                    $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
-                    $dp.SetValueXY($currentLabels[$j].Split(" ")[0], $currentPixels[$j])
-                    $series.Points.Add($dp)
-                }
-
-                $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-                $title.Text = "Data Graph (Step $stepIndex)"
-                $title.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
-                $chart.Titles.Add($title)
-
-                $chart.SaveImage($latestGraphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
-                $historyGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph_step_$stepIndex.png")
-                $chart.SaveImage($historyGraphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
-                $chart.Dispose()
-            } catch {}
+        if (-not (Test-Path $csvPath)) {
+            "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
         # --- ポップアップ表示関数 ---
-        function Show-Guide ($title, $msg, $showGraph, $isFinal) {
+        function Show-Guide ($title, $msg, $graphImgPath, $isFinal) {
             try {
                 $form = New-Object System.Windows.Forms.Form
                 $form.Text = "NEGI MONITOR REALTIME MONITOR"
-                if ($showGraph) { $form.Size = New-Object System.Drawing.Size(550, 560) } else { $form.Size = New-Object System.Drawing.Size(550, 220) }
+                if ($graphImgPath -and (Test-Path $graphImgPath)) { $form.Size = New-Object System.Drawing.Size(550, 560) } else { $form.Size = New-Object System.Drawing.Size(550, 220) }
                 $form.StartPosition = "CenterScreen"
                 $form.TopMost = $true
                 $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
@@ -94,12 +56,12 @@ jobs:
                 $lblMsg.TextAlign = "MiddleCenter"
                 $form.Controls.Add($lblMsg)
 
-                if ($showGraph -and (Test-Path $latestGraphPath)) {
+                if ($graphImgPath -and (Test-Path $graphImgPath)) {
                     $pictureBox = New-Object System.Windows.Forms.PictureBox
                     $pictureBox.Size = New-Object System.Drawing.Size(500, 300)
                     $pictureBox.Location = New-Object System.Drawing.Point(20, 120)
                     $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::StretchImage
-                    $bytes = [System.IO.File]::ReadAllBytes($latestGraphPath)
+                    $bytes = [System.IO.File]::ReadAllBytes($graphImgPath)
                     $ms = New-Object System.IO.MemoryStream(,$bytes)
                     $pictureBox.Image = [System.Drawing.Image]::FromStream($ms)
                     $form.Controls.Add($pictureBox)
@@ -116,7 +78,7 @@ jobs:
                 $form.Controls.Add($lblTimer)
 
                 $form.Show()
-                $maxTime = if ($isFinal) { 10 } else { 15 }
+                $maxTime = if ($isFinal) { 12 } else { 15 }
                 for ($countdown = $maxTime; $countdown -gt 0; $countdown--) {
                     if ($isFinal) {
                         $lblTimer.ForeColor = [System.Drawing.Color]::LightBlue
@@ -134,8 +96,7 @@ jobs:
             } catch {}
         }
 
-        $pixelValues = @()
-        $doneLabels = @()
+        # 実験設定
         $labels = @("0 Leaves Test", "1 Leaf Test", "2 Leaves Test", "3 Leaves Test", "4 Leaves Test")
         $instructions = @(
             "Please clean the desk! Make it 0 leaves.",
@@ -144,15 +105,13 @@ jobs:
             "Please ADD 3rd leaf on the desk now!",
             "Please ADD 4th leaf on the desk now!"
         )
+        $capturedPhotoPaths = @()
+        $capturedTimeStrings = @()
 
-        if (Test-Path $latestGraphPath) { Remove-Item $latestGraphPath -Force }
-
-        # 5回ループ実験
+        # --- STEP 1: 5回連続でまず写真を撮影して保存する ---
         for ($i = 0; $i -lt 5; $i++) {
-            $showGraphFlag = $i -gt 0
-            Show-Guide -title $labels[$i] -msg $instructions[$i] -showGraph $showGraphFlag -isFinal $false
+            Show-Guide -title $labels[$i] -msg $instructions[$i] -graphImgPath $null -isFinal $false
 
-            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
@@ -160,51 +119,109 @@ jobs:
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
 
-            # --- 【新規】内蔵カメラからUSBカメラへの自動切り替え命令 ---
-            # Windowsカメラアプリの「カメラ切り替え」ショートカットキー (Alt + C) を送信
+            # カメラ切り替え (Alt + C)
             $wshell.SendKeys("%c")
             Start-Sleep -Seconds 2
 
-            # 撮影ボタン (Alt + Enter)
+            # 撮影 (Alt + Enter)
             $wshell.SendKeys("%~")
             Start-Sleep -Seconds 3
+
+            # 日本時間の日付文字列を作成 (例: 2026.6.24_9.38.30)
+            $now = Get-Date
+            $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
+            $capturedTimeStrings += $timeStr
 
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
             $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
             $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
             
-            $timestamp = (Get-Date).ToString("HH:mm:ss")
-            $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_step_$($i).png"), [System.Drawing.Imaging.ImageFormat]::Png)
+            # 日時を含んだユニークなファイル名で保存（これで絶対上書きされません）
+            $photoPath = [System.IO.Path]::Combine($picturesFolder, "negi_step_${i}_${timeStr}.png")
+            $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            $capturedPhotoPaths += $photoPath
 
-            # --- 画素数のカウント処理（全画素探索モード） ---
+            $graphic.Dispose(); $bitmap.Dispose()
+            powershell -Command "Stop-Process -Name 'Camera' -Force"
+            Start-Sleep -Seconds 2
+        }
+
+        # --- STEP 2: 撮影した全画像を解析して、0枚目を基準に引き算する ---
+        $rawPixelValues = @()
+        
+        foreach ($path in $capturedPhotoPaths) {
+            $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenPixels = 0
             $minH = 50
             $maxH = 170
-            
-            for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x++) {
-                for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y++) {
-                    $p = $bitmap.GetPixel($x, $y)
+
+            # 超精密全画素スキャン
+            for ($x = [int]($img.Width*0.2); $x -lt [int]($img.Width*0.8); $x++) {
+                for ($y = [int]($img.Height*0.2); $y -lt [int]($img.Height*0.8); $y++) {
+                    $p = $img.GetPixel($x, $y)
                     if ($p.G -gt $p.R -and $p.G -gt $p.B) {
                         $h = $p.GetHue()
                         if ($h -gt $minH -and $h -lt $maxH) { $greenPixels++ }
                     }
                 }
             }
-            
-            $pixelValues += $greenPixels
-            $doneLabels += $labels[$i]
-
-            "$timestamp,$($labels[$i]),$greenPixels" | Out-File -FilePath $csvPath -Append -Encoding utf8
-
-            $graphic.Dispose(); $bitmap.Dispose()
-            powershell -Command "Stop-Process -Name 'Camera' -Force"
-
-            Update-GraphImage -currentLabels $doneLabels -currentPixels $pixelValues -stepIndex $i
-            Start-Sleep -Seconds 2
+            $rawPixelValues += $greenPixels
+            $img.Dispose()
         }
 
-        # --- 3. 英語のプログラム終了メッセージ画面（完成グラフを添えて） ---
-        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "The program has safely completed all processes.`nAll graph images are saved in Pictures folder." -showGraph $true -isFinal $true
+        # 0枚目の値を基準(ベースライン)とする
+        $basePixel = $rawPixelValues[0]
+        $growthPixelValues = @()
+        for ($i = 0; $i -lt 5; $i++) {
+            # 基準値を引く（マイナスになったら0にする）
+            $diff = $rawPixelValues[$i] - $basePixel
+            if ($diff -lt 0) { $diff = 0 }
+            $growthPixelValues += $diff
+        }
+
+        # --- STEP 3: 成長曲線グラフの生成と別名保存 ---
+        $finalTimeStr = $capturedTimeStrings[4] # 最後の撮影時刻をグラフ名に採用
+        $graphImgPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph_${finalTimeStr}.png")
+
+        try {
+            $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
+            $chart.Size = New-Object System.Drawing.Size(500, 300)
+
+            $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
+            $chartArea.AxisX.Title = "Leaf Count"
+            $chartArea.AxisY.Title = "Growth Pixel Count (Net Increase)"
+            $chartArea.AxisY.Minimum = 0
+            $chart.ChartAreas.Add($chartArea)
+
+            $series = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+            $series.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
+            $series.BorderWidth = 4
+            $series.Color = [System.Drawing.Color]::ForestGreen
+            $series.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
+            $series.MarkerSize = 12
+            $series.MarkerColor = [System.Drawing.Color]::Orange
+            $chart.Series.Add($series)
+
+            for ($j = 0; $j -lt 5; $j++) {
+                $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
+                $dp.SetValueXY($j, $growthPixelValues[$j])
+                $series.Points.Add($dp)
+
+                # CSVログにも日時、生データ、引き算後のデータをすべて記録
+                "${finalTimeStr},${j},$($rawPixelValues[$j]),$($growthPixelValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
+            }
+
+            $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
+            $title.Text = "Negi Growth Curve (${finalTimeStr})"
+            $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
+            $chart.Titles.Add($title)
+
+            $chart.SaveImage($graphImgPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
+            $chart.Dispose()
+        } catch {}
+
+        # --- STEP 4: 英語のプログラム終了メッセージ画面（完成した成長曲線を添えて） ---
+        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "The program calculated the growth curve based on 0-leaf.`nAll files are named with Japanese date and time safely." -graphImgPath $graphImgPath -isFinal $true
         
         exit 0
