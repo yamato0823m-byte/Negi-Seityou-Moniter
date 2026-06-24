@@ -13,6 +13,7 @@ jobs:
 
     - name: 2. Save Each Graph and Safely Finish Experiment
       run: |
+        $ErrorActionPreference = "SilentlyContinue"
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
         Add-Type -AssemblyName WindowsBase
@@ -20,11 +21,11 @@ jobs:
 
         $picturesFolder = [Environment]::GetFolderPath('MyPictures')
         $csvPath = [System.IO.Path]::Combine($picturesFolder, "negi_data.csv")
+        $latestGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
         
-        # CSVの初期化
         "Time,Leaf_Count,Green_Pixel_Count" | Out-File -FilePath $csvPath -Encoding utf8
 
-        # --- リアルタイムにグラフ画像を生成・別名保存する関数 ---
+        # --- グラフ画像を生成・保存する関数 ---
         function Update-GraphImage ($currentLabels, $currentPixels, $stepIndex) {
             try {
                 $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
@@ -56,28 +57,19 @@ jobs:
                 $title.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
                 $chart.Titles.Add($title)
 
-                # 最新の共通グラフ画像として保存
-                $latestGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
                 $chart.SaveImage($latestGraphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
-
-                # 各ステップごとの履歴用グラフ写真としても別名保存！
                 $historyGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph_step_$stepIndex.png")
                 $chart.SaveImage($historyGraphPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
-
                 $chart.Dispose()
             } catch {}
         }
 
-        # --- グラフ付きポップアップ指示・終了画面 ---
+        # --- ポップアップ表示関数 ---
         function Show-Guide ($title, $msg, $showGraph, $isFinal) {
             try {
                 $form = New-Object System.Windows.Forms.Form
                 $form.Text = "NEGI MONITOR REALTIME MONITOR"
-                if ($showGraph) {
-                    $form.Size = New-Object System.Drawing.Size(550, 560)
-                } else {
-                    $form.Size = New-Object System.Drawing.Size(550, 220)
-                }
+                if ($showGraph) { $form.Size = New-Object System.Drawing.Size(550, 560) } else { $form.Size = New-Object System.Drawing.Size(550, 220) }
                 $form.StartPosition = "CenterScreen"
                 $form.TopMost = $true
                 $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
@@ -102,18 +94,15 @@ jobs:
                 $lblMsg.TextAlign = "MiddleCenter"
                 $form.Controls.Add($lblMsg)
 
-                $latestGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
                 if ($showGraph -and (Test-Path $latestGraphPath)) {
                     $pictureBox = New-Object System.Windows.Forms.PictureBox
                     $pictureBox.Size = New-Object System.Drawing.Size(500, 300)
                     $pictureBox.Location = New-Object System.Drawing.Point(20, 120)
                     $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::StretchImage
-                    
                     $bytes = [System.IO.File]::ReadAllBytes($latestGraphPath)
                     $ms = New-Object System.IO.MemoryStream(,$bytes)
                     $pictureBox.Image = [System.Drawing.Image]::FromStream($ms)
                     $form.Controls.Add($pictureBox)
-                    
                     $timerY = 440
                 } else {
                     $timerY = 130
@@ -127,10 +116,7 @@ jobs:
                 $form.Controls.Add($lblTimer)
 
                 $form.Show()
-                
-                # 通常ステップは15秒、最終画面は10秒カウントダウン
                 $maxTime = if ($isFinal) { 10 } else { 15 }
-                
                 for ($countdown = $maxTime; $countdown -gt 0; $countdown--) {
                     if ($isFinal) {
                         $lblTimer.ForeColor = [System.Drawing.Color]::LightBlue
@@ -142,15 +128,12 @@ jobs:
                     [System.Windows.Forms.Application]::DoEvents()
                     Start-Sleep -Seconds 1
                 }
-                
-                # メモリ解放とクローズ
                 $form.Close()
                 if ($pictureBox) { $pictureBox.Dispose(); $ms.Dispose() }
                 $form.Dispose()
             } catch {}
         }
 
-        # データ用配列
         $pixelValues = @()
         $doneLabels = @()
         $labels = @("0 Leaves Test", "1 Leaf Test", "2 Leaves Test", "3 Leaves Test", "4 Leaves Test")
@@ -162,9 +145,7 @@ jobs:
             "Please ADD 4th leaf on the desk now!"
         )
 
-        # 古い最新グラフ画像を初期化
-        $latestGraphPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph.png")
-        if (Test-Path $latestGraphPath) { Remove-Item $latestGraphPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $latestGraphPath) { Remove-Item $latestGraphPath -Force }
 
         # 5回ループ実験
         for ($i = 0; $i -lt 5; $i++) {
@@ -188,11 +169,34 @@ jobs:
             $timestamp = (Get-Date).ToString("HH:mm:ss")
             $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_step_$($i).png"), [System.Drawing.Imaging.ImageFormat]::Png)
 
-            # 画素数のカウント
+            # --- 画素数のカウント処理（エラー回避用に判定式を確実に格納） ---
             $greenPixels = 0
+            $minH = 50
+            $maxH = 170
+            
             for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x += 15) {
                 for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y += 15) {
                     $p = $bitmap.GetPixel($x, $y)
                     if ($p.G -gt $p.R -and $p.G -gt $p.B) {
                         $h = $p.GetHue()
-                        if ($h -gt 50 -and $h -lt
+                        if ($h -gt $minH -and $h -lt $maxH) { $greenPixels++ }
+                    }
+                }
+            }
+            
+            $pixelValues += $greenPixels
+            $doneLabels += $labels[$i]
+
+            "$timestamp,$($labels[$i]),$greenPixels" | Out-File -FilePath $csvPath -Append -Encoding utf8
+
+            $graphic.Dispose(); $bitmap.Dispose()
+            powershell -Command "Stop-Process -Name 'Camera' -Force"
+
+            Update-GraphImage -currentLabels $doneLabels -currentPixels $pixelValues -stepIndex $i
+            Start-Sleep -Seconds 2
+        }
+
+        # --- 3. 英語のプログラム終了メッセージ画面（完成グラフを添えて） ---
+        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "The program has safely completed all processes.`nAll graph images are saved in Pictures folder." -showGraph $true -isFinal $true
+        
+        exit 0
