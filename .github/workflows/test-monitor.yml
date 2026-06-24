@@ -152,12 +152,20 @@ jobs:
             $showGraphFlag = $i -gt 0
             Show-Guide -title $labels[$i] -msg $instructions[$i] -showGraph $showGraphFlag -isFinal $false
 
+            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
+
+            # --- 【新規】内蔵カメラからUSBカメラへの自動切り替え命令 ---
+            # Windowsカメラアプリの「カメラ切り替え」ショートカットキー (Alt + C) を送信
+            $wshell.SendKeys("%c")
+            Start-Sleep -Seconds 2
+
+            # 撮影ボタン (Alt + Enter)
             $wshell.SendKeys("%~")
             Start-Sleep -Seconds 3
 
@@ -169,12 +177,11 @@ jobs:
             $timestamp = (Get-Date).ToString("HH:mm:ss")
             $bitmap.Save([System.IO.Path]::Combine($picturesFolder, "negi_step_$($i).png"), [System.Drawing.Imaging.ImageFormat]::Png)
 
-            # --- 画素数のカウント処理（間引きなし・全画素探索モードに改造） ---
+            # --- 画素数のカウント処理（全画素探索モード） ---
             $greenPixels = 0
             $minH = 50
             $maxH = 170
             
-            # xとyのステップを「+= 15」から「++ (1ずつ)」に修正し、全ピクセルをスキャン
             for ($x = [int]($screen.Width*0.2); $x -lt [int]($screen.Width*0.8); $x++) {
                 for ($y = [int]($screen.Height*0.2); $y -lt [int]($screen.Height*0.8); $y++) {
                     $p = $bitmap.GetPixel($x, $y)
