@@ -31,17 +31,8 @@ jobs:
             "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count,Fitted_Straight_Pixel" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        # ウインドウ制御用のWin32 APIを定義（カメラアプリを最大化するため）
-        $csharpCode = @"
-        using System;
-        using System.Runtime.InteropServices;
-        public class WindowHelper {
-            [DllImport("user32.dll")]
-            public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-        }
-"@
+        # ウインドウ制御用のWin32 APIを定義（エラー回避のため1行スタイルで安全に読み込み）
+        $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); }"
         Add-Type -TypeDefinition $csharpCode
 
         # --- ポップアップ表示関数 ---
@@ -147,12 +138,11 @@ jobs:
 
             # カメラ切り替え (Alt + C)
             $wshell.SendKeys("%c")
-            # 【重要】USBカメラの映像が完全に起動して明るさが安定するまで「4秒」しっかり待つ
+            # USBカメラの映像が完全に起動して明るさが安定するまで「4秒」しっかり待つ
             Start-Sleep -Seconds 4
 
             # 撮影 (Alt + Enter)
             $wshell.SendKeys("%~")
-            # 撮影処理が完了するまで待つ
             Start-Sleep -Seconds 3
 
             # 日本時間の日付文字列を作成
