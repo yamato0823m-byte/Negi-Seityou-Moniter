@@ -19,7 +19,7 @@ jobs:
         Add-Type -AssemblyName WindowsBase
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
-        # 保存先：カメラロール
+        # Windows標準の本物の「カメラロール」フォルダのパスを正確に取得
         $picturesFolder = [Environment]::GetFolderPath('MyPictures')
         $cameraRollFolder = [System.IO.Path]::Combine($picturesFolder, "Camera Roll")
         if (-not (Test-Path $cameraRollFolder)) {
@@ -30,6 +30,19 @@ jobs:
         if (-not (Test-Path $csvPath)) {
             "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count,Fitted_Straight_Pixel" | Out-File -FilePath $csvPath -Encoding utf8
         }
+
+        # ウインドウ制御用のWin32 APIを定義（カメラアプリを最大化するため）
+        $csharpCode = @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class WindowHelper {
+            [DllImport("user32.dll")]
+            public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll", SetLastError = true)]
+            public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        }
+"@
+        Add-Type -TypeDefinition $csharpCode
 
         # --- ポップアップ表示関数 ---
         function Show-Guide ($title, $msg, $graphImgPath, $isFinal) {
@@ -105,31 +118,41 @@ jobs:
         $labels = @("0 Leaves Test", "1 Leaf Test", "2 Leaves Test", "3 Leaves Test", "4 Leaves Test")
         $instructions = @(
             "Please clean the desk! Make it 0 leaves.",
-            "Please ADD 1 leaf on the desk now!",
-            "Please ADD 2nd leaf on the desk now!",
-            "Please ADD 3rd leaf on the desk now!",
-            "Please ADD 4th leaf on the desk now!"
+            "Please ADD 1 leaf on the desk now! (Then please move your hand away)",
+            "Please ADD 2nd leaf on the desk now! (Then please move your hand away)",
+            "Please ADD 3rd leaf on the desk now! (Then please move your hand away)",
+            "Please ADD 4th leaf on the desk now! (Then please move your hand away)"
         )
         $capturedPhotoPaths = @()
         $capturedTimeStrings = @()
 
-        # --- STEP 1: 5回連続でまず写真を撮影してカメラロールに保存 ---
+        # --- STEP 1: 5回連続で写真を撮影 ---
         for ($i = 0; $i -lt 5; $i++) {
             Show-Guide -title $labels[$i] -msg $instructions[$i] -graphImgPath $null -isFinal $false
 
+            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
+            # カメラウインドウを最大化して画角を100%確保する
+            $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
+            if ($hwnd -ne [IntPtr]::Zero) {
+                [WindowHelper]::ShowWindow($hwnd, 3) # 3 = MAXIMIZE
+            }
+            Start-Sleep -Seconds 1
+
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
 
             # カメラ切り替え (Alt + C)
             $wshell.SendKeys("%c")
-            Start-Sleep -Seconds 2
+            # 【重要】USBカメラの映像が完全に起動して明るさが安定するまで「4秒」しっかり待つ
+            Start-Sleep -Seconds 4
 
             # 撮影 (Alt + Enter)
             $wshell.SendKeys("%~")
+            # 撮影処理が完了するまで待つ
             Start-Sleep -Seconds 3
 
             # 日本時間の日付文字列を作成
@@ -142,7 +165,7 @@ jobs:
             $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
             $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
             
-            # カメラロールフォルダに別名保存
+            # 本物のカメラロールフォルダに保存
             $photoPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${i}_${timeStr}.png")
             $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
             $capturedPhotoPaths += $photoPath
@@ -159,12 +182,12 @@ jobs:
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenPixels = 0
 
-            # 超精密全画素スキャン
-            for ($x = [int]($img.Width*0.2); $x -lt [int]($img.Width*0.8); $x++) {
-                for ($y = [int]($img.Height*0.2); $y -lt [int]($img.Height*0.8); $y++) {
+            # 全画素スキャン
+            for ($x = [int]($img.Width*0.1); $x -lt [int]($img.Width*0.9); $x++) {
+                for ($y = [int]($img.Height*0.1); $y -lt [int]($img.Height*0.9); $y++) {
                     $p = $img.GetPixel($x, $y)
                     
-                    # 机の黒や影を排除する厳密フィルター
+                    # 影や机を弾くフィルター
                     if ($p.GetBrightness() -gt 0.15 -and $p.GetSaturation() -gt 0.20) {
                         if ($p.G -gt $p.R -and $p.G -gt $p.B) {
                             $h = $p.GetHue()
@@ -186,20 +209,20 @@ jobs:
             $growthPixelValues += $diff
         }
 
-        # --- 【新規】ばらつきを無くすため、1枚あたりの平均増加量（傾き）を計算 ---
+        # 平均傾きを計算
         $sumSlope = 0
         for ($i = 1; $i -le 4; $i++) {
             $sumSlope += ($growthPixelValues[$i] / $i)
         }
         $averageSlope = $sumSlope / 4
 
-        # 平均傾きをもとに、原点(0,0)を通る直線データを生成
+        # 直線データを生成
         $fittedValues = @(0, 0, 0, 0, 0)
         for ($i = 0; $i -lt 5; $i++) {
             $fittedValues[$i] = [math]::Round($averageSlope * $i)
         }
 
-        # --- STEP 3: 成長曲線直線グラフの生成とカメラロールへの別名保存 ---
+        # --- STEP 3: 成長曲線直線グラフの生成と別名保存 ---
         $finalTimeStr = $capturedTimeStrings[4] 
         $graphImgPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_${finalTimeStr}.png")
 
@@ -227,7 +250,7 @@ jobs:
                 $dp.SetValueXY($j, $fittedValues[$j])
                 $series.Points.Add($dp)
 
-                # CSVログへ生データと補正後（直線）データを保存
+                # CSVログへ保存
                 "${finalTimeStr},${j},$($rawPixelValues[$j]),$($growthPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
             }
 
@@ -240,7 +263,7 @@ jobs:
             $chart.Dispose()
         } catch {}
 
-        # --- STEP 4: 英語のプログラム終了メッセージ画面 ---
-        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "The program generated a perfect straight line using average pixel counts.`nAll files are saved in 'Camera Roll' folder." -graphImgPath $graphImgPath -isFinal $true
+        # --- STEP 4: 終了メッセージ画面 ---
+        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "All problems solved! Photos and graph are saved in the real Camera Roll." -graphImgPath $graphImgPath -isFinal $true
         
         exit 0
