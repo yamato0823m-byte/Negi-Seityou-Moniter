@@ -19,11 +19,16 @@ jobs:
         Add-Type -AssemblyName WindowsBase
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
+        # 保存先：カメラロール
         $picturesFolder = [Environment]::GetFolderPath('MyPictures')
-        $csvPath = [System.IO.Path]::Combine($picturesFolder, "negi_growth_log.csv")
-        
+        $cameraRollFolder = [System.IO.Path]::Combine($picturesFolder, "Camera Roll")
+        if (-not (Test-Path $cameraRollFolder)) {
+            New-Item -ItemType Directory -Path $cameraRollFolder | Out-Null
+        }
+
+        $csvPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_growth_log.csv")
         if (-not (Test-Path $csvPath)) {
-            "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count" | Out-File -FilePath $csvPath -Encoding utf8
+            "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count,Fitted_Straight_Pixel" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
         # --- ポップアップ表示関数 ---
@@ -108,7 +113,7 @@ jobs:
         $capturedPhotoPaths = @()
         $capturedTimeStrings = @()
 
-        # --- STEP 1: 5回連続でまず写真を撮影して保存する ---
+        # --- STEP 1: 5回連続でまず写真を撮影してカメラロールに保存 ---
         for ($i = 0; $i -lt 5; $i++) {
             Show-Guide -title $labels[$i] -msg $instructions[$i] -graphImgPath $null -isFinal $false
 
@@ -127,7 +132,7 @@ jobs:
             $wshell.SendKeys("%~")
             Start-Sleep -Seconds 3
 
-            # 日本時間の日付文字列を作成 (例: 2026.6.24_9.38.30)
+            # 日本時間の日付文字列を作成
             $now = Get-Date
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
             $capturedTimeStrings += $timeStr
@@ -137,8 +142,8 @@ jobs:
             $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
             $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
             
-            # 日時を含んだユニークなファイル名で保存（これで絶対上書きされません）
-            $photoPath = [System.IO.Path]::Combine($picturesFolder, "negi_step_${i}_${timeStr}.png")
+            # カメラロールフォルダに別名保存
+            $photoPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${i}_${timeStr}.png")
             $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
             $capturedPhotoPaths += $photoPath
 
@@ -147,22 +152,24 @@ jobs:
             Start-Sleep -Seconds 2
         }
 
-        # --- STEP 2: 撮影した全画像を解析して、0枚目を基準に引き算する ---
+        # --- STEP 2: 撮影した全画像を解析 ---
         $rawPixelValues = @()
         
         foreach ($path in $capturedPhotoPaths) {
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenPixels = 0
-            $minH = 50
-            $maxH = 170
 
             # 超精密全画素スキャン
             for ($x = [int]($img.Width*0.2); $x -lt [int]($img.Width*0.8); $x++) {
                 for ($y = [int]($img.Height*0.2); $y -lt [int]($img.Height*0.8); $y++) {
                     $p = $img.GetPixel($x, $y)
-                    if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                        $h = $p.GetHue()
-                        if ($h -gt $minH -and $h -lt $maxH) { $greenPixels++ }
+                    
+                    # 机の黒や影を排除する厳密フィルター
+                    if ($p.GetBrightness() -gt 0.15 -and $p.GetSaturation() -gt 0.20) {
+                        if ($p.G -gt $p.R -and $p.G -gt $p.B) {
+                            $h = $p.GetHue()
+                            if ($h -gt 55 -and $h -lt 165) { $greenPixels++ }
+                        }
                     }
                 }
             }
@@ -174,15 +181,27 @@ jobs:
         $basePixel = $rawPixelValues[0]
         $growthPixelValues = @()
         for ($i = 0; $i -lt 5; $i++) {
-            # 基準値を引く（マイナスになったら0にする）
             $diff = $rawPixelValues[$i] - $basePixel
             if ($diff -lt 0) { $diff = 0 }
             $growthPixelValues += $diff
         }
 
-        # --- STEP 3: 成長曲線グラフの生成と別名保存 ---
-        $finalTimeStr = $capturedTimeStrings[4] # 最後の撮影時刻をグラフ名に採用
-        $graphImgPath = [System.IO.Path]::Combine($picturesFolder, "negi_graph_${finalTimeStr}.png")
+        # --- 【新規】ばらつきを無くすため、1枚あたりの平均増加量（傾き）を計算 ---
+        $sumSlope = 0
+        for ($i = 1; $i -le 4; $i++) {
+            $sumSlope += ($growthPixelValues[$i] / $i)
+        }
+        $averageSlope = $sumSlope / 4
+
+        # 平均傾きをもとに、原点(0,0)を通る直線データを生成
+        $fittedValues = @(0, 0, 0, 0, 0)
+        for ($i = 0; $i -lt 5; $i++) {
+            $fittedValues[$i] = [math]::Round($averageSlope * $i)
+        }
+
+        # --- STEP 3: 成長曲線直線グラフの生成とカメラロールへの別名保存 ---
+        $finalTimeStr = $capturedTimeStrings[4] 
+        $graphImgPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_${finalTimeStr}.png")
 
         try {
             $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
@@ -190,7 +209,7 @@ jobs:
 
             $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
             $chartArea.AxisX.Title = "Leaf Count"
-            $chartArea.AxisY.Title = "Growth Pixel Count (Net Increase)"
+            $chartArea.AxisY.Title = "Green Pixel Count (Fitted Line)"
             $chartArea.AxisY.Minimum = 0
             $chart.ChartAreas.Add($chartArea)
 
@@ -205,15 +224,15 @@ jobs:
 
             for ($j = 0; $j -lt 5; $j++) {
                 $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
-                $dp.SetValueXY($j, $growthPixelValues[$j])
+                $dp.SetValueXY($j, $fittedValues[$j])
                 $series.Points.Add($dp)
 
-                # CSVログにも日時、生データ、引き算後のデータをすべて記録
-                "${finalTimeStr},${j},$($rawPixelValues[$j]),$($growthPixelValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
+                # CSVログへ生データと補正後（直線）データを保存
+                "${finalTimeStr},${j},$($rawPixelValues[$j]),$($growthPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
             }
 
             $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-            $title.Text = "Negi Growth Curve (${finalTimeStr})"
+            $title.Text = "Negi Growth Fitted Line (${finalTimeStr})"
             $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
             $chart.Titles.Add($title)
 
@@ -221,7 +240,7 @@ jobs:
             $chart.Dispose()
         } catch {}
 
-        # --- STEP 4: 英語のプログラム終了メッセージ画面（完成した成長曲線を添えて） ---
-        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "The program calculated the growth curve based on 0-leaf.`nAll files are named with Japanese date and time safely." -graphImgPath $graphImgPath -isFinal $true
+        # --- STEP 4: 英語のプログラム終了メッセージ画面 ---
+        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "The program generated a perfect straight line using average pixel counts.`nAll files are saved in 'Camera Roll' folder." -graphImgPath $graphImgPath -isFinal $true
         
         exit 0
