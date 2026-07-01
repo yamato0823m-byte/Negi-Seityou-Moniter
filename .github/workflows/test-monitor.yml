@@ -9,7 +9,7 @@ jobs:
 
     steps:
     - name: 1. Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v4.2.2
 
     - name: 2. Advanced Growth Curve Monitor
       run: |
