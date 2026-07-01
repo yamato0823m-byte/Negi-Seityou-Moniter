@@ -106,13 +106,13 @@ jobs:
         }
 
         # 実験設定 (5回撮影)
-        $labels = @("1st Capturing", "2nd Capturing", "3rd Capturing", "4th Capturing", "5th Capturing")
+        $labels = @("1st Capturing (0 Leaves)", "2nd Capturing (1 Leaf)", "3rd Capturing (2 Leaves)", "4th Capturing (3 Leaves)", "5th Capturing (4 Leaves)")
         $instructions = @(
-            "Please place leaves for the 1st photo.",
-            "Please place leaves for the 2nd photo.",
-            "Please place leaves for the 3rd photo.",
-            "Please place leaves for the 4th photo.",
-            "Please place leaves for the 5th photo."
+            "Please clear the desk. Make it 0 leaves.",
+            "Please place 1 leaf on the desk.",
+            "Please place 2 leaves on the desk.",
+            "Please place 3 leaves on the desk.",
+            "Please place 4 leaves on the desk."
         )
         $capturedPhotoPaths = @()
         $capturedTimeStrings = @()
@@ -120,6 +120,9 @@ jobs:
         # --- STEP 1: 5回連続で写真を撮影 ---
         for ($i = 0; $i -lt 5; $i++) {
             Show-Guide -title $labels[$i] -msg $instructions[$i] -graphImgPath $null -isFinal $false
+
+            Stop-Process -Name "Camera" -Force 2>$null
+            Start-Sleep -Seconds 1
 
             # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
@@ -143,7 +146,7 @@ jobs:
 
             # 撮影 (Alt + Enter)
             $wshell.SendKeys("%~")
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 4
 
             # 日本時間の日付文字列を作成
             $now = Get-Date
@@ -165,7 +168,7 @@ jobs:
             Start-Sleep -Seconds 2
         }
 
-        # --- STEP 2: 撮影した全画像を解析（絶対ピクセル数を抽出） ---
+        # --- STEP 2: 撮影した全画像を解析 ---
         $rawPixelValues = @()
         
         foreach ($path in $capturedPhotoPaths) {
@@ -176,10 +179,12 @@ jobs:
                 for ($y = [int]($img.Height*0.1); $y -lt [int]($img.Height*0.9); $y++) {
                     $p = $img.GetPixel($x, $y)
                     
-                    if ($p.GetBrightness() -gt 0.15 -and $p.GetSaturation() -gt 0.20) {
+                    # 【基準調整】少し薄い緑や、影で暗くなった緑（輝度・彩度のしきい値を引き下げ）も検知できるように変更
+                    if ($p.GetBrightness() -gt 0.08 -and $p.GetSaturation() -gt 0.12) {
                         if ($p.G -gt $p.R -and $p.G -gt $p.B) {
                             $h = $p.GetHue()
-                            if ($h -gt 55 -and $h -lt 165) { $greenPixels++ }
+                            # ネギの緑色の範囲を少し広めに設定（黄緑〜深緑までカバー）
+                            if ($h -gt 45 -and $h -lt 175) { $greenPixels++ }
                         }
                     }
                 }
@@ -189,11 +194,10 @@ jobs:
         }
 
         # --- STEP 3: 最小二乗法による回帰直線の計算 (y = ax + b) ---
-        # X軸は撮影回数のインデックス (1, 2, 3, 4, 5) とする
         $n = 5
         $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
         for ($i = 0; $i -lt $n; $i++) {
-            $x = $i + 1
+            $x = $i # X軸は実際の葉の枚数 (0, 1, 2, 3, 4) に固定
             $y = $rawPixelValues[$i]
             $sumX += $x
             $sumY += $y
@@ -201,14 +205,12 @@ jobs:
             $sumX2 += ($x * $x)
         }
         
-        # 傾き(a) と 切片(b) の計算
         $slope = ($n * $sumXY - $sumX * $sumY) / ($n * $sumX2 - $sumX * $sumX)
         $intercept = ($sumY - $slope * $sumX) / $n
 
-        # 直線上の計算値を算出
         $fittedValues = @(0, 0, 0, 0, 0)
         for ($i = 0; $i -lt $n; $i++) {
-            $x = $i + 1
+            $x = $i
             $fittedValues[$i] = [math]::Round($slope * $x + $intercept)
         }
 
@@ -221,16 +223,14 @@ jobs:
             $chart.Size = New-Object System.Drawing.Size(500, 300)
 
             $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
-            $chartArea.AxisX.Title = "Measurement Order (1st to 5th)"
+            $chartArea.AxisX.Title = "Leaf Count (0 to 4)"
             $chartArea.AxisX.Interval = 1
             $chartArea.AxisY.Title = "Actual Green Pixel Count"
             
-            # Y軸の最小値をデータの最低値より少し下に自動設定
             $minPixel = ($rawPixelValues | Measure-Object -Minimum).Minimum
             $chartArea.AxisY.Minimum = [math]::Max(0, [math]::Round($minPixel * 0.8))
             $chart.ChartAreas.Add($chartArea)
 
-            # 1. 実際のバラつき面積（ドットプロット用シリーズ）
             $seriesRaw = New-Object System.Windows.Forms.DataVisualization.Charting.Series
             $seriesRaw.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Point
             $seriesRaw.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
@@ -239,7 +239,6 @@ jobs:
             $seriesRaw.Name = "Actual Area"
             $chart.Series.Add($seriesRaw)
 
-            # 2. 平均をあらわす直線（トレンドライン用シリーズ）
             $seriesFit = New-Object System.Windows.Forms.DataVisualization.Charting.Series
             $seriesFit.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
             $seriesFit.BorderWidth = 3
@@ -247,17 +246,14 @@ jobs:
             $seriesFit.Name = "Trend Line"
             $chart.Series.Add($seriesFit)
 
-            # データの追加
             for ($j = 0; $j -lt $n; $j++) {
-                $xIdx = $j + 1
-                $seriesRaw.Points.AddXY($xIdx, $rawPixelValues[$j])
-                $seriesFit.Points.AddXY($xIdx, $fittedValues[$j])
+                $xVal = $j # X軸の値を枚数(0,1,2,3,4)にマッピング
+                $seriesRaw.Points.AddXY($xVal, $rawPixelValues[$j])
+                $seriesFit.Points.AddXY($xVal, $fittedValues[$j])
 
-                # CSVログに書き込み
-                "${finalTimeStr},${xIdx},$($rawPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
+                "${finalTimeStr},${xVal},$($rawPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
             }
 
-            # 凡例の追加
             $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
             $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
             $chart.Legends.Add($legend)
