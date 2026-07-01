@@ -31,8 +31,8 @@ jobs:
             "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count,Fitted_Straight_Pixel" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        # ウインドウ制御用のWin32 APIを定義（エラー回避のため1行スタイルで安全に読み込み）
-        $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); }"
+        # ウインドウ制御用のWin32 APIを定義（SetForegroundWindowを追加して最前面化を絶対にする）
+        $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); [DllImport(`"user32.dll`")] public static extern bool SetForegroundWindow(IntPtr hWnd); }"
         Add-Type -TypeDefinition $csharpCode
 
         # --- ポップアップ表示関数 ---
@@ -125,12 +125,13 @@ jobs:
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
-            # カメラウインドウを最大化して画角を100%確保する
+            # 【バグ修正】カメラウィンドウを確実に最前面に引っ張り出して最大化する
             $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
             if ($hwnd -ne [IntPtr]::Zero) {
+                [WindowHelper]::SetForegroundWindow($hwnd) | Out-Null
                 [WindowHelper]::ShowWindow($hwnd, 3) # 3 = MAXIMIZE
             }
-            Start-Sleep -Seconds 1
+            Start-Sleep -Seconds 2
 
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
@@ -138,7 +139,6 @@ jobs:
 
             # カメラ切り替え (Alt + C)
             $wshell.SendKeys("%c")
-            # USBカメラの映像が完全に起動して明るさが安定するまで「4秒」しっかり待つ
             Start-Sleep -Seconds 4
 
             # 撮影 (Alt + Enter)
@@ -172,12 +172,10 @@ jobs:
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenPixels = 0
 
-            # 全画素スキャン
             for ($x = [int]($img.Width*0.1); $x -lt [int]($img.Width*0.9); $x++) {
                 for ($y = [int]($img.Height*0.1); $y -lt [int]($img.Height*0.9); $y++) {
                     $p = $img.GetPixel($x, $y)
                     
-                    # 影や机を弾くフィルター
                     if ($p.GetBrightness() -gt 0.15 -and $p.GetSaturation() -gt 0.20) {
                         if ($p.G -gt $p.R -and $p.G -gt $p.B) {
                             $h = $p.GetHue()
@@ -190,7 +188,6 @@ jobs:
             $img.Dispose()
         }
 
-        # 0枚目の値を基準(ベースライン)とする
         $basePixel = $rawPixelValues[0]
         $growthPixelValues = @()
         for ($i = 0; $i -lt 5; $i++) {
@@ -199,14 +196,12 @@ jobs:
             $growthPixelValues += $diff
         }
 
-        # 平均傾きを計算
         $sumSlope = 0
         for ($i = 1; $i -le 4; $i++) {
             $sumSlope += ($growthPixelValues[$i] / $i)
         }
         $averageSlope = $sumSlope / 4
 
-        # 直線データを生成
         $fittedValues = @(0, 0, 0, 0, 0)
         for ($i = 0; $i -lt 5; $i++) {
             $fittedValues[$i] = [math]::Round($averageSlope * $i)
@@ -240,7 +235,6 @@ jobs:
                 $dp.SetValueXY($j, $fittedValues[$j])
                 $series.Points.Add($dp)
 
-                # CSVログへ保存
                 "${finalTimeStr},${j},$($rawPixelValues[$j]),$($growthPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
             }
 
