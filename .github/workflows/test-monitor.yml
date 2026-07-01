@@ -175,17 +175,14 @@ jobs:
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenPixels = 0
 
-            for ($x = [int]($img.Width*0.1); $x -lt [int]($img.Width*0.9); $x++) {
-                for ($y = [int]($img.Height*0.1); $y -lt [int]($img.Height*0.9); $y++) {
+            # 【バグ根本修正】10%のカットエリアを廃止し、画面の端から端まで（100%）すべてのピクセルをスキャンする
+            for ($x = 0; $x -lt $img.Width; $x++) {
+                for ($y = 0; $y -lt $img.Height; $y++) {
                     $p = $img.GetPixel($x, $y)
                     
-                    # 【基準調整】少し薄い緑や、影で暗くなった緑（輝度・彩度のしきい値を引き下げ）も検知できるように変更
-                    if ($p.GetBrightness() -gt 0.08 -and $p.GetSaturation() -gt 0.12) {
-                        if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                            $h = $p.GetHue()
-                            # ネギの緑色の範囲を少し広めに設定（黄緑〜深緑までカバー）
-                            if ($h -gt 45 -and $h -lt 175) { $greenPixels++ }
-                        }
+                    if ($p.G -gt $p.R -and $p.G -gt $p.B) {
+                        $h = $p.GetHue()
+                        if ($h -gt 35 -and $h -lt 185) { $greenPixels++ }
                     }
                 }
             }
@@ -197,7 +194,7 @@ jobs:
         $n = 5
         $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
         for ($i = 0; $i -lt $n; $i++) {
-            $x = $i # X軸は実際の葉の枚数 (0, 1, 2, 3, 4) に固定
+            $x = $i 
             $y = $rawPixelValues[$i]
             $sumX += $x
             $sumY += $y
@@ -247,7 +244,7 @@ jobs:
             $chart.Series.Add($seriesFit)
 
             for ($j = 0; $j -lt $n; $j++) {
-                $xVal = $j # X軸の値を枚数(0,1,2,3,4)にマッピング
+                $xVal = $j 
                 $seriesRaw.Points.AddXY($xVal, $rawPixelValues[$j])
                 $seriesFit.Points.AddXY($xVal, $fittedValues[$j])
 
