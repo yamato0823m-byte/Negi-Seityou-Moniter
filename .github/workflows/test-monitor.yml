@@ -28,10 +28,10 @@ jobs:
 
         $csvPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_growth_log.csv")
         if (-not (Test-Path $csvPath)) {
-            "DateTime,Leaf_Count,Raw_Pixel_Count,Growth_Pixel_Count,Fitted_Straight_Pixel" | Out-File -FilePath $csvPath -Encoding utf8
+            "DateTime,Step,Raw_Pixel_Count,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        # ウインドウ制御用のWin32 APIを定義（SetForegroundWindowを追加して最前面化を絶対にする）
+        # ウインドウ制御用のWin32 APIを定義
         $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); [DllImport(`"user32.dll`")] public static extern bool SetForegroundWindow(IntPtr hWnd); }"
         Add-Type -TypeDefinition $csharpCode
 
@@ -105,14 +105,14 @@ jobs:
             } catch {}
         }
 
-        # 実験設定
-        $labels = @("0 Leaves Test", "1 Leaf Test", "2 Leaves Test", "3 Leaves Test", "4 Leaves Test")
+        # 実験設定 (5回撮影)
+        $labels = @("1st Capturing", "2nd Capturing", "3rd Capturing", "4th Capturing", "5th Capturing")
         $instructions = @(
-            "Please clean the desk! Make it 0 leaves.",
-            "Please ADD 1 leaf on the desk now! (Then please move your hand away)",
-            "Please ADD 2nd leaf on the desk now! (Then please move your hand away)",
-            "Please ADD 3rd leaf on the desk now! (Then please move your hand away)",
-            "Please ADD 4th leaf on the desk now! (Then please move your hand away)"
+            "Please place leaves for the 1st photo.",
+            "Please place leaves for the 2nd photo.",
+            "Please place leaves for the 3rd photo.",
+            "Please place leaves for the 4th photo.",
+            "Please place leaves for the 5th photo."
         )
         $capturedPhotoPaths = @()
         $capturedTimeStrings = @()
@@ -125,11 +125,11 @@ jobs:
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
-            # 【バグ修正】カメラウィンドウを確実に最前面に引っ張り出して最大化する
+            # カメラウィンドウを確実に最前面に引っ張り出して最大化
             $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
             if ($hwnd -ne [IntPtr]::Zero) {
                 [WindowHelper]::SetForegroundWindow($hwnd) | Out-Null
-                [WindowHelper]::ShowWindow($hwnd, 3) # 3 = MAXIMIZE
+                [WindowHelper]::ShowWindow($hwnd, 3)
             }
             Start-Sleep -Seconds 2
 
@@ -155,7 +155,7 @@ jobs:
             $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
             $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
             
-            # 本物のカメラロールフォルダに保存
+            # 保存
             $photoPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${i}_${timeStr}.png")
             $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
             $capturedPhotoPaths += $photoPath
@@ -165,7 +165,7 @@ jobs:
             Start-Sleep -Seconds 2
         }
 
-        # --- STEP 2: 撮影した全画像を解析 ---
+        # --- STEP 2: 撮影した全画像を解析（絶対ピクセル数を抽出） ---
         $rawPixelValues = @()
         
         foreach ($path in $capturedPhotoPaths) {
@@ -188,26 +188,31 @@ jobs:
             $img.Dispose()
         }
 
-        $basePixel = $rawPixelValues[0]
-        $growthPixelValues = @()
-        for ($i = 0; $i -lt 5; $i++) {
-            $diff = $rawPixelValues[$i] - $basePixel
-            if ($diff -lt 0) { $diff = 0 }
-            $growthPixelValues += $diff
+        # --- STEP 3: 最小二乗法による回帰直線の計算 (y = ax + b) ---
+        # X軸は撮影回数のインデックス (1, 2, 3, 4, 5) とする
+        $n = 5
+        $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
+        for ($i = 0; $i -lt $n; $i++) {
+            $x = $i + 1
+            $y = $rawPixelValues[$i]
+            $sumX += $x
+            $sumY += $y
+            $sumXY += ($x * $y)
+            $sumX2 += ($x * $x)
         }
+        
+        # 傾き(a) と 切片(b) の計算
+        $slope = ($n * $sumXY - $sumX * $sumY) / ($n * $sumX2 - $sumX * $sumX)
+        $intercept = ($sumY - $slope * $sumX) / $n
 
-        $sumSlope = 0
-        for ($i = 1; $i -le 4; $i++) {
-            $sumSlope += ($growthPixelValues[$i] / $i)
-        }
-        $averageSlope = $sumSlope / 4
-
+        # 直線上の計算値を算出
         $fittedValues = @(0, 0, 0, 0, 0)
-        for ($i = 0; $i -lt 5; $i++) {
-            $fittedValues[$i] = [math]::Round($averageSlope * $i)
+        for ($i = 0; $i -lt $n; $i++) {
+            $x = $i + 1
+            $fittedValues[$i] = [math]::Round($slope * $x + $intercept)
         }
 
-        # --- STEP 3: 成長曲線直線グラフの生成と別名保存 ---
+        # --- STEP 4: リアルプロット＆回帰直線グラフの生成 ---
         $finalTimeStr = $capturedTimeStrings[4] 
         $graphImgPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_${finalTimeStr}.png")
 
@@ -216,30 +221,49 @@ jobs:
             $chart.Size = New-Object System.Drawing.Size(500, 300)
 
             $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
-            $chartArea.AxisX.Title = "Leaf Count"
-            $chartArea.AxisY.Title = "Green Pixel Count (Fitted Line)"
-            $chartArea.AxisY.Minimum = 0
+            $chartArea.AxisX.Title = "Measurement Order (1st to 5th)"
+            $chartArea.AxisX.Interval = 1
+            $chartArea.AxisY.Title = "Actual Green Pixel Count"
+            
+            # Y軸の最小値をデータの最低値より少し下に自動設定
+            $minPixel = ($rawPixelValues | Measure-Object -Minimum).Minimum
+            $chartArea.AxisY.Minimum = [math]::Max(0, [math]::Round($minPixel * 0.8))
             $chart.ChartAreas.Add($chartArea)
 
-            $series = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-            $series.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
-            $series.BorderWidth = 4
-            $series.Color = [System.Drawing.Color]::ForestGreen
-            $series.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
-            $series.MarkerSize = 12
-            $series.MarkerColor = [System.Drawing.Color]::Orange
-            $chart.Series.Add($series)
+            # 1. 実際のバラつき面積（ドットプロット用シリーズ）
+            $seriesRaw = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+            $seriesRaw.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Point
+            $seriesRaw.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
+            $seriesRaw.MarkerSize = 14
+            $seriesRaw.MarkerColor = [System.Drawing.Color]::DeepSkyBlue
+            $seriesRaw.Name = "Actual Area"
+            $chart.Series.Add($seriesRaw)
 
-            for ($j = 0; $j -lt 5; $j++) {
-                $dp = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint
-                $dp.SetValueXY($j, $fittedValues[$j])
-                $series.Points.Add($dp)
+            # 2. 平均をあらわす直線（トレンドライン用シリーズ）
+            $seriesFit = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+            $seriesFit.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
+            $seriesFit.BorderWidth = 3
+            $seriesFit.Color = [System.Drawing.Color]::OrangeRed
+            $seriesFit.Name = "Trend Line"
+            $chart.Series.Add($seriesFit)
 
-                "${finalTimeStr},${j},$($rawPixelValues[$j]),$($growthPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
+            # データの追加
+            for ($j = 0; $j -lt $n; $j++) {
+                $xIdx = $j + 1
+                $seriesRaw.Points.AddXY($xIdx, $rawPixelValues[$j])
+                $seriesFit.Points.AddXY($xIdx, $fittedValues[$j])
+
+                # CSVログに書き込み
+                "${finalTimeStr},${xIdx},$($rawPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
             }
 
+            # 凡例の追加
+            $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
+            $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
+            $chart.Legends.Add($legend)
+
             $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-            $title.Text = "Negi Growth Fitted Line (${finalTimeStr})"
+            $title.Text = "Real Leaf Area & Trend Line (${finalTimeStr})"
             $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
             $chart.Titles.Add($title)
 
@@ -247,7 +271,7 @@ jobs:
             $chart.Dispose()
         } catch {}
 
-        # --- STEP 4: 終了メッセージ画面 ---
-        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "All problems solved! Photos and graph are saved in the real Camera Roll." -graphImgPath $graphImgPath -isFinal $true
+        # --- STEP 5: 終了メッセージ画面 ---
+        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "Real size plots and correct trend line generated successfully!" -graphImgPath $graphImgPath -isFinal $true
         
         exit 0
