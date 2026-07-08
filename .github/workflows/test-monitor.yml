@@ -103,7 +103,7 @@ jobs:
             } catch {}
         }
 
-        # 濃い緑の葉っぱ・ツヤに対応した新・緑カウント関数
+        # 机のグレーを完全に弾き、本物の葉の緑だけを抽出するロジック
         function Get-GreenPixels ($path) {
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $count = 0
@@ -111,15 +111,13 @@ jobs:
                 for ($y = 0; $y -lt $img.Height; $y++) {
                     $p = $img.GetPixel($x, $y)
                     
-                    # 完全な黒（机）や白（激しい光の反射）だけをピンポイントで除外
-                    if ($p.R -lt 70 -and $p.G -lt 70 -and $p.B -lt 70) { continue }
-                    if ($p.R -gt 240 -and $p.G -gt 240 -and $p.B -gt 240) { continue }
-
-                    # 濃い緑の葉に対応：赤や青よりも、緑成分(G)が確実に勝っているかを判定
-                    if ($p.G -gt $p.R -and $p.G -gt $p.B) {
+                    # 圧倒的に緑（G）が赤（R）や青（B）より強い（差が20以上）ピクセルだけを許可
+                    # これにより、R, G, Bがほぼ同じ値になる「グレーの机」「黒い影」「白い光」を完全に排除
+                    if (($p.G - -gt $p.R + 20) -and ($p.G -gt $p.B + 20)) {
                         $h = $p.GetHue()
-                        # 緑色の色相範囲（50度〜175度）に収まっているかチェック
-                        if ($h -gt 50 -and $h -lt 175) { $count++ }
+                        if ($h -gt 55 -and $h -lt 170) { 
+                            $count++ 
+                        }
                     }
                 }
             }
@@ -139,7 +137,6 @@ jobs:
                 $chartArea.AxisX.Maximum = 4
                 $chartArea.AxisY.Title = "Green Pixel Count"
                 
-                # 自動でグラフの縦軸が綺麗に収まるように設定
                 $maxVal = 1000
                 foreach ($val in $pixelArray) { if ($val -gt $maxVal) { $maxVal = $val } }
                 $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.2)
@@ -161,7 +158,6 @@ jobs:
                 $seriesFit.Name = "Trend Line"
                 $chart.Series.Add($seriesFit)
 
-                # 最小二乗法の計算
                 $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
                 for ($i = 0; $i -lt $stepCount; $i++) {
                     $x = $i
@@ -175,8 +171,6 @@ jobs:
                     $seriesRaw.Points.AddXY($i, $pixelArray[$i])
                     $fitted = [math]::Round($slope * $i + $intercept)
                     $seriesFit.Points.AddXY($i, $fitted)
-                    
-                    # CSVにログ保存
                     "${timeStr},${i},$($pixelArray[$i]),${fitted}" | Out-File -FilePath $csvPath -Append -Encoding utf8
                 }
 
@@ -194,25 +188,25 @@ jobs:
             } catch {}
         }
 
-        # 撮影用の共通関数
+        # 撮影処理（アプリの保存ラグを防ぐためにウェイトを大幅強化）
         function Capture-Photo ($stepIndex) {
             Stop-Process -Name "Camera" -Force 2>$null
-            Start-Sleep -Seconds 1
+            Start-Sleep -Seconds 2
             powershell -Command "start microsoft.windows.camera:"
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 5
             $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
             if ($hwnd -ne [IntPtr]::Zero) {
                 [WindowHelper]::SetForegroundWindow($hwnd) | Out-Null
                 [WindowHelper]::ShowWindow($hwnd, 3)
             }
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds 3
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
             $wshell.SendKeys("%c") # カメラ切り替え
-            Start-Sleep -Seconds 4
-            $wshell.SendKeys("%~") # 撮影
-            Start-Sleep -Seconds 4
+            Start-Sleep -Seconds 5
+            $wshell.SendKeys("%~") # 撮影実行
+            Start-Sleep -Seconds 6  # 保存完了までしっかり待つ
 
             $now = Get-Date
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
@@ -224,7 +218,9 @@ jobs:
             $photoPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${stepIndex}_${timeStr}.png")
             $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
             $graphic.Dispose(); $bitmap.Dispose()
+            
             powershell -Command "Stop-Process -Name 'Camera' -Force"
+            Start-Sleep -Seconds 2
             
             return @($photoPath, $timeStr)
         }
@@ -232,7 +228,7 @@ jobs:
         # --- 実験スタート ---
         $allPixels = @()
 
-        # 1回目〜3回目（0枚、1枚、2枚）の撮影
+        # 1回目〜3回目（0枚、1枚、2枚）
         $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
         for ($i = 0; $i -lt 3; $i++) {
             Show-Guide -title "Capturing Step $($i+1)" -msg $instructions1[$i] -graphImgPath $null -isFinal $false
@@ -241,13 +237,13 @@ jobs:
             $allPixels += $pixels
         }
 
-        # 【中間プロット】3枚の写真分（0, 1, 2枚）で計算してグラフを表示！
+        # 中間プロット
         $midTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
         $midGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_mid_${midTime}.png")
         Save-NegiChart -stepCount 3 -pixelArray $allPixels -timeStr $midTime -outputPath $midGraphPath
-        Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps! Check the plots below." -graphImgPath $midGraphPath -isFinal $false
+        Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
 
-        # 4回目〜5回目（3枚、4枚）の撮影
+        # 4回目〜5回目（3枚、4枚）
         $instructions2 = @("Place 3 leaves on the desk.", "Place 4 leaves on the desk.")
         for ($i = 3; $i -lt 5; $i++) {
             Show-Guide -title "Capturing Step $($i+1)" -msg $instructions2[$i-3] -graphImgPath $null -isFinal $false
@@ -256,10 +252,10 @@ jobs:
             $allPixels += $pixels
         }
 
-        # 【最終プロット】全5枚の写真分（0, 1, 2, 3, 4枚）で再計算して最終グラフを表示！
+        # 最終プロット
         $finalTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
         $finalGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_final_${finalTime}.png")
         Save-NegiChart -stepCount 5 -pixelArray $allPixels -timeStr $finalTime -outputPath $finalGraphPath
-        Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully! Experiment finished!" -graphImgPath $finalGraphPath -isFinal $true
+        Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
 
         exit 0
