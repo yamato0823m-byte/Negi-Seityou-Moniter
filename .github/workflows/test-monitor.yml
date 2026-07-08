@@ -30,22 +30,8 @@ jobs:
             "DateTime,Step,Raw_Pixel_Count,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        # ウインドウ制御のWin32 API（強制最大化と最前面化）
-        $csharpCode = @"
-        using System;
-        using System.Runtime.InteropServices;
-        public class WindowHelper {
-            [DllImport("user32.dll")]
-            public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-            [DllImport("user32.dll")]
-            public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-            [DllImport("user32.dll")]
-            public static extern bool SetForegroundWindow(IntPtr hWnd);
-            [DllImport("user32.dll")]
-            public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-            public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-        }
-"@
+        # 構文エラーを回避するため1行に修正
+        $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); [DllImport(`"user32.dll`")] public static extern bool SetForegroundWindow(IntPtr hWnd); }"
         Add-Type -TypeDefinition $csharpCode
 
         # --- ポップアップ表示関数 ---
@@ -118,14 +104,13 @@ jobs:
             } catch {}
         }
 
-        # 判定をより確実に（GがR,Bより高く、かつ輝度がある程度ある緑）
+        # 判定（GがR,Bより高く、かつ輝度がある程度ある緑）
         function Get-GreenPixels ($path) {
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $count = 0
             for ($x = 0; $x -lt $img.Width; $x++) {
                 for ($y = 0; $y -lt $img.Height; $y++) {
                     $p = $img.GetPixel($x, $y)
-                    # 緑が他の色より明確に強く、暗すぎない条件
                     if (($p.G -gt $p.R + 15) -and ($p.G -gt $p.B + 15) -and ($p.G -gt 40)) {
                         $h = $p.GetHue()
                         if ($h -gt 60 -and $h -lt 165) { 
@@ -205,17 +190,16 @@ jobs:
             } catch {}
         }
 
-        # 撮影処理（強制的にウインドウを最大化させて画面全体をキャプチャする）
+        # 撮影処理（強制最大化）
         function Capture-Photo ($stepIndex) {
             Stop-Process -Name "Camera" -Force 2>$null
             Start-Sleep -Seconds 2
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 4
             
-            # カメラアプリを探して「強制最大化(3)」にする
             $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
             if ($hwnd -ne [IntPtr]::Zero) {
-                [WindowHelper]::ShowWindow($hwnd, 3) | Out-Null # 3 = SW_MAXIMIZE(最大化)
+                [WindowHelper]::ShowWindow($hwnd, 3) | Out-Null
                 Start-Sleep -Seconds 1
                 [WindowHelper]::SetForegroundWindow($hwnd) | Out-Null
             }
@@ -224,12 +208,11 @@ jobs:
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
-            $wshell.SendKeys("%c") # カメラ切り替えキー
+            $wshell.SendKeys("%c")
             Start-Sleep -Seconds 4
-            $wshell.SendKeys("%~") # 撮影実行（Enter）
-            Start-Sleep -Seconds 5 # 保存を待つ
+            $wshell.SendKeys("%~")
+            Start-Sleep -Seconds 5
 
-            # 画面全体を完全にスクショする（最大化しているのでカメラ映像が確実に中央に入る）
             $now = Get-Date
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
