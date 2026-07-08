@@ -85,7 +85,7 @@ jobs:
                 $form.Controls.Add($lblTimer)
 
                 $form.Show()
-                $maxTime = if ($isFinal) { 15 } else { 15 }
+                $maxTime = 15
                 for ($countdown = $maxTime; $countdown -gt 0; $countdown--) {
                     if ($isFinal) {
                         $lblTimer.ForeColor = [System.Drawing.Color]::LightBlue
@@ -103,20 +103,23 @@ jobs:
             } catch {}
         }
 
-        # 画像から緑の画素数を数える関数（机の黒を完全に無視する基準に修正）
+        # 濃い緑の葉っぱ・ツヤに対応した新・緑カウント関数
         function Get-GreenPixels ($path) {
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $count = 0
-            # 画面全体（100%）をスキャン
             for ($x = 0; $x -lt $img.Width; $x++) {
                 for ($y = 0; $y -lt $img.Height; $y++) {
                     $p = $img.GetPixel($x, $y)
-                    # 机の黒い影を弾くために、明るさ(>0.15)と色の濃さ(彩度>0.25)を厳しめに制限
-                    if ($p.GetBrightness() -gt 0.15 -and $p.GetSaturation() -gt 0.25) {
-                        if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                            $h = $p.GetHue()
-                            if ($h -gt 50 -and $h -lt 170) { $count++ }
-                        }
+                    
+                    # 完全な黒（机）や白（激しい光の反射）だけをピンポイントで除外
+                    if ($p.R -lt 70 -and $p.G -lt 70 -and $p.B -lt 70) { continue }
+                    if ($p.R -gt 240 -and $p.G -gt 240 -and $p.B -gt 240) { continue }
+
+                    # 濃い緑の葉に対応：赤や青よりも、緑成分(G)が確実に勝っているかを判定
+                    if ($p.G -gt $p.R -and $p.G -gt $p.B) {
+                        $h = $p.GetHue()
+                        # 緑色の色相範囲（50度〜175度）に収まっているかチェック
+                        if ($h -gt 50 -and $h -lt 175) { $count++ }
                     }
                 }
             }
@@ -135,10 +138,14 @@ jobs:
                 $chartArea.AxisX.Minimum = 0
                 $chartArea.AxisX.Maximum = 4
                 $chartArea.AxisY.Title = "Green Pixel Count"
+                
+                # 自動でグラフの縦軸が綺麗に収まるように設定
+                $maxVal = 1000
+                foreach ($val in $pixelArray) { if ($val -gt $maxVal) { $maxVal = $val } }
+                $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.2)
                 $chartArea.AxisY.Minimum = 0
                 $chart.ChartAreas.Add($chartArea)
 
-                # 実際のプロット点
                 $seriesRaw = New-Object System.Windows.Forms.DataVisualization.Charting.Series
                 $seriesRaw.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Point
                 $seriesRaw.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
@@ -147,7 +154,6 @@ jobs:
                 $seriesRaw.Name = "Actual Area"
                 $chart.Series.Add($seriesRaw)
 
-                # 回帰直線
                 $seriesFit = New-Object System.Windows.Forms.DataVisualization.Charting.Series
                 $seriesFit.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
                 $seriesFit.BorderWidth = 3
@@ -165,7 +171,6 @@ jobs:
                 $slope = ($stepCount * $sumXY - $sumX * $sumY) / ($stepCount * $sumX2 - $sumX * $sumX)
                 $intercept = ($sumY - $slope * $sumX) / $stepCount
 
-                # データの追加
                 for ($i = 0; $i -lt $stepCount; $i++) {
                     $seriesRaw.Points.AddXY($i, $pixelArray[$i])
                     $fitted = [math]::Round($slope * $i + $intercept)
