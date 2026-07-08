@@ -11,7 +11,7 @@ jobs:
     - name: 1. Checkout
       uses: actions/checkout@v4.2.2
 
-    - name: 2. Advanced Growth Curve Monitor
+    - name: 2. Step-by-Step Growth Curve Monitor
       run: |
         $ErrorActionPreference = "SilentlyContinue"
         Add-Type -AssemblyName System.Windows.Forms
@@ -19,7 +19,6 @@ jobs:
         Add-Type -AssemblyName WindowsBase
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
-        # Windows標準の本物の「カメラロール」フォルダのパスを正確に取得
         $picturesFolder = [Environment]::GetFolderPath('MyPictures')
         $cameraRollFolder = [System.IO.Path]::Combine($picturesFolder, "Camera Roll")
         if (-not (Test-Path $cameraRollFolder)) {
@@ -31,7 +30,6 @@ jobs:
             "DateTime,Step,Raw_Pixel_Count,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        # ウインドウ制御用のWin32 APIを定義
         $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); [DllImport(`"user32.dll`")] public static extern bool SetForegroundWindow(IntPtr hWnd); }"
         Add-Type -TypeDefinition $csharpCode
 
@@ -49,7 +47,7 @@ jobs:
 
                 $lblTitle = New-Object System.Windows.Forms.Label
                 $lblTitle.Text = $title
-                $lblTitle.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
+                $lblTitle.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
                 $lblTitle.ForeColor = [System.Drawing.Color]::ForestGreen
                 $lblTitle.Size = New-Object System.Drawing.Size(510, 30)
                 $lblTitle.Location = New-Object System.Drawing.Point(20, 20)
@@ -87,11 +85,11 @@ jobs:
                 $form.Controls.Add($lblTimer)
 
                 $form.Show()
-                $maxTime = if ($isFinal) { 12 } else { 15 }
+                $maxTime = if ($isFinal) { 15 } else { 15 }
                 for ($countdown = $maxTime; $countdown -gt 0; $countdown--) {
                     if ($isFinal) {
                         $lblTimer.ForeColor = [System.Drawing.Color]::LightBlue
-                        $lblTimer.Text = "Closing this window automatically in $($countdown)s..."
+                        $lblTimer.Text = "Closing window in $($countdown)s..."
                     } else {
                         $lblTimer.ForeColor = [System.Drawing.Color]::Yellow
                         $lblTimer.Text = "Remaining: $($countdown)s"
@@ -105,166 +103,158 @@ jobs:
             } catch {}
         }
 
-        # 実験設定 (5回撮影)
-        $labels = @("1st Capturing (0 Leaves)", "2nd Capturing (1 Leaf)", "3rd Capturing (2 Leaves)", "4th Capturing (3 Leaves)", "5th Capturing (4 Leaves)")
-        $instructions = @(
-            "Please clear the desk. Make it 0 leaves.",
-            "Please place 1 leaf on the desk.",
-            "Please place 2 leaves on the desk.",
-            "Please place 3 leaves on the desk.",
-            "Please place 4 leaves on the desk."
-        )
-        $capturedPhotoPaths = @()
-        $capturedTimeStrings = @()
+        # 画像から緑の画素数を数える関数（机の黒を完全に無視する基準に修正）
+        function Get-GreenPixels ($path) {
+            $img = [System.Drawing.Bitmap]::FromFile($path)
+            $count = 0
+            # 画面全体（100%）をスキャン
+            for ($x = 0; $x -lt $img.Width; $x++) {
+                for ($y = 0; $y -lt $img.Height; $y++) {
+                    $p = $img.GetPixel($x, $y)
+                    # 机の黒い影を弾くために、明るさ(>0.15)と色の濃さ(彩度>0.25)を厳しめに制限
+                    if ($p.GetBrightness() -gt 0.15 -and $p.GetSaturation() -gt 0.25) {
+                        if ($p.G -gt $p.R -and $p.G -gt $p.B) {
+                            $h = $p.GetHue()
+                            if ($h -gt 50 -and $h -lt 170) { $count++ }
+                        }
+                    }
+                }
+            }
+            $img.Dispose()
+            return $count
+        }
 
-        # --- STEP 1: 5回連続で写真を撮影 ---
-        for ($i = 0; $i -lt 5; $i++) {
-            Show-Guide -title $labels[$i] -msg $instructions[$i] -graphImgPath $null -isFinal $false
+        # グラフを描画して保存する関数
+        function Save-NegiChart ($stepCount, $pixelArray, $timeStr, $outputPath) {
+            try {
+                $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
+                $chart.Size = New-Object System.Drawing.Size(500, 300)
+                $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
+                $chartArea.AxisX.Title = "Leaf Count"
+                $chartArea.AxisX.Interval = 1
+                $chartArea.AxisX.Minimum = 0
+                $chartArea.AxisX.Maximum = 4
+                $chartArea.AxisY.Title = "Green Pixel Count"
+                $chartArea.AxisY.Minimum = 0
+                $chart.ChartAreas.Add($chartArea)
 
+                # 実際のプロット点
+                $seriesRaw = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+                $seriesRaw.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Point
+                $seriesRaw.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
+                $seriesRaw.MarkerSize = 14
+                $seriesRaw.MarkerColor = [System.Drawing.Color]::DeepSkyBlue
+                $seriesRaw.Name = "Actual Area"
+                $chart.Series.Add($seriesRaw)
+
+                # 回帰直線
+                $seriesFit = New-Object System.Windows.Forms.DataVisualization.Charting.Series
+                $seriesFit.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
+                $seriesFit.BorderWidth = 3
+                $seriesFit.Color = [System.Drawing.Color]::OrangeRed
+                $seriesFit.Name = "Trend Line"
+                $chart.Series.Add($seriesFit)
+
+                # 最小二乗法の計算
+                $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
+                for ($i = 0; $i -lt $stepCount; $i++) {
+                    $x = $i
+                    $y = $pixelArray[$i]
+                    $sumX += $x ; $sumY += $y ; $sumXY += ($x * $y) ; $sumX2 += ($x * $x)
+                }
+                $slope = ($stepCount * $sumXY - $sumX * $sumY) / ($stepCount * $sumX2 - $sumX * $sumX)
+                $intercept = ($sumY - $slope * $sumX) / $stepCount
+
+                # データの追加
+                for ($i = 0; $i -lt $stepCount; $i++) {
+                    $seriesRaw.Points.AddXY($i, $pixelArray[$i])
+                    $fitted = [math]::Round($slope * $i + $intercept)
+                    $seriesFit.Points.AddXY($i, $fitted)
+                    
+                    # CSVにログ保存
+                    "${timeStr},${i},$($pixelArray[$i]),${fitted}" | Out-File -FilePath $csvPath -Append -Encoding utf8
+                }
+
+                $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
+                $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
+                $chart.Legends.Add($legend)
+
+                $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
+                $title.Text = "Leaf Area Graph (Steps: 1 to $stepCount)"
+                $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
+                $chart.Titles.Add($title)
+
+                $chart.SaveImage($outputPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
+                $chart.Dispose()
+            } catch {}
+        }
+
+        # 撮影用の共通関数
+        function Capture-Photo ($stepIndex) {
             Stop-Process -Name "Camera" -Force 2>$null
             Start-Sleep -Seconds 1
-
-            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
-            
-            # カメラウィンドウを確実に最前面に引っ張り出して最大化
             $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
             if ($hwnd -ne [IntPtr]::Zero) {
                 [WindowHelper]::SetForegroundWindow($hwnd) | Out-Null
                 [WindowHelper]::ShowWindow($hwnd, 3)
             }
             Start-Sleep -Seconds 2
-
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
-
-            # カメラ切り替え (Alt + C)
-            $wshell.SendKeys("%c")
+            $wshell.SendKeys("%c") # カメラ切り替え
+            Start-Sleep -Seconds 4
+            $wshell.SendKeys("%~") # 撮影
             Start-Sleep -Seconds 4
 
-            # 撮影 (Alt + Enter)
-            $wshell.SendKeys("%~")
-            Start-Sleep -Seconds 4
-
-            # 日本時間の日付文字列を作成
             $now = Get-Date
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
-            $capturedTimeStrings += $timeStr
-
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
             $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
             $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
             
-            # 保存
-            $photoPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${i}_${timeStr}.png")
+            $photoPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${stepIndex}_${timeStr}.png")
             $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
-            $capturedPhotoPaths += $photoPath
-
             $graphic.Dispose(); $bitmap.Dispose()
             powershell -Command "Stop-Process -Name 'Camera' -Force"
-            Start-Sleep -Seconds 2
-        }
-
-        # --- STEP 2: 撮影した全画像を解析 ---
-        $rawPixelValues = @()
-        
-        foreach ($path in $capturedPhotoPaths) {
-            $img = [System.Drawing.Bitmap]::FromFile($path)
-            $greenPixels = 0
-
-            # 【バグ根本修正】10%のカットエリアを廃止し、画面の端から端まで（100%）すべてのピクセルをスキャンする
-            for ($x = 0; $x -lt $img.Width; $x++) {
-                for ($y = 0; $y -lt $img.Height; $y++) {
-                    $p = $img.GetPixel($x, $y)
-                    
-                    if ($p.G -gt $p.R -and $p.G -gt $p.B) {
-                        $h = $p.GetHue()
-                        if ($h -gt 35 -and $h -lt 185) { $greenPixels++ }
-                    }
-                }
-            }
-            $rawPixelValues += $greenPixels
-            $img.Dispose()
-        }
-
-        # --- STEP 3: 最小二乗法による回帰直線の計算 (y = ax + b) ---
-        $n = 5
-        $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
-        for ($i = 0; $i -lt $n; $i++) {
-            $x = $i 
-            $y = $rawPixelValues[$i]
-            $sumX += $x
-            $sumY += $y
-            $sumXY += ($x * $y)
-            $sumX2 += ($x * $x)
-        }
-        
-        $slope = ($n * $sumXY - $sumX * $sumY) / ($n * $sumX2 - $sumX * $sumX)
-        $intercept = ($sumY - $slope * $sumX) / $n
-
-        $fittedValues = @(0, 0, 0, 0, 0)
-        for ($i = 0; $i -lt $n; $i++) {
-            $x = $i
-            $fittedValues[$i] = [math]::Round($slope * $x + $intercept)
-        }
-
-        # --- STEP 4: リアルプロット＆回帰直線グラフの生成 ---
-        $finalTimeStr = $capturedTimeStrings[4] 
-        $graphImgPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_${finalTimeStr}.png")
-
-        try {
-            $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
-            $chart.Size = New-Object System.Drawing.Size(500, 300)
-
-            $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
-            $chartArea.AxisX.Title = "Leaf Count (0 to 4)"
-            $chartArea.AxisX.Interval = 1
-            $chartArea.AxisY.Title = "Actual Green Pixel Count"
             
-            $minPixel = ($rawPixelValues | Measure-Object -Minimum).Minimum
-            $chartArea.AxisY.Minimum = [math]::Max(0, [math]::Round($minPixel * 0.8))
-            $chart.ChartAreas.Add($chartArea)
+            return @($photoPath, $timeStr)
+        }
 
-            $seriesRaw = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-            $seriesRaw.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Point
-            $seriesRaw.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
-            $seriesRaw.MarkerSize = 14
-            $seriesRaw.MarkerColor = [System.Drawing.Color]::DeepSkyBlue
-            $seriesRaw.Name = "Actual Area"
-            $chart.Series.Add($seriesRaw)
+        # --- 実験スタート ---
+        $allPixels = @()
 
-            $seriesFit = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-            $seriesFit.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
-            $seriesFit.BorderWidth = 3
-            $seriesFit.Color = [System.Drawing.Color]::OrangeRed
-            $seriesFit.Name = "Trend Line"
-            $chart.Series.Add($seriesFit)
+        # 1回目〜3回目（0枚、1枚、2枚）の撮影
+        $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
+        for ($i = 0; $i -lt 3; $i++) {
+            Show-Guide -title "Capturing Step $($i+1)" -msg $instructions1[$i] -graphImgPath $null -isFinal $false
+            $result = Capture-Photo -stepIndex $i
+            $pixels = Get-GreenPixels -path $result[0]
+            $allPixels += $pixels
+        }
 
-            for ($j = 0; $j -lt $n; $j++) {
-                $xVal = $j 
-                $seriesRaw.Points.AddXY($xVal, $rawPixelValues[$j])
-                $seriesFit.Points.AddXY($xVal, $fittedValues[$j])
+        # 【中間プロット】3枚の写真分（0, 1, 2枚）で計算してグラフを表示！
+        $midTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
+        $midGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_mid_${midTime}.png")
+        Save-NegiChart -stepCount 3 -pixelArray $allPixels -timeStr $midTime -outputPath $midGraphPath
+        Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps! Check the plots below." -graphImgPath $midGraphPath -isFinal $false
 
-                "${finalTimeStr},${xVal},$($rawPixelValues[$j]),$($fittedValues[$j])" | Out-File -FilePath $csvPath -Append -Encoding utf8
-            }
+        # 4回目〜5回目（3枚、4枚）の撮影
+        $instructions2 = @("Place 3 leaves on the desk.", "Place 4 leaves on the desk.")
+        for ($i = 3; $i -lt 5; $i++) {
+            Show-Guide -title "Capturing Step $($i+1)" -msg $instructions2[$i-3] -graphImgPath $null -isFinal $false
+            $result = Capture-Photo -stepIndex $i
+            $pixels = Get-GreenPixels -path $result[0]
+            $allPixels += $pixels
+        }
 
-            $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
-            $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
-            $chart.Legends.Add($legend)
+        # 【最終プロット】全5枚の写真分（0, 1, 2, 3, 4枚）で再計算して最終グラフを表示！
+        $finalTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
+        $finalGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_final_${finalTime}.png")
+        Save-NegiChart -stepCount 5 -pixelArray $allPixels -timeStr $finalTime -outputPath $finalGraphPath
+        Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully! Experiment finished!" -graphImgPath $finalGraphPath -isFinal $true
 
-            $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-            $title.Text = "Real Leaf Area & Trend Line (${finalTimeStr})"
-            $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
-            $chart.Titles.Add($title)
-
-            $chart.SaveImage($graphImgPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
-            $chart.Dispose()
-        } catch {}
-
-        # --- STEP 5: 終了メッセージ画面 ---
-        Show-Guide -title "EXPERIMENT COMPLETELY FINISHED!" -msg "Real size plots and correct trend line generated successfully!" -graphImgPath $graphImgPath -isFinal $true
-        
         exit 0
