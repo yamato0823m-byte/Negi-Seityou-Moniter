@@ -30,7 +30,22 @@ jobs:
             "DateTime,Step,Raw_Pixel_Count,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        $csharpCode = "using System; using System.Runtime.InteropServices; public class WindowHelper { [DllImport(`"user32.dll`")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(`"user32.dll`")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName); [DllImport(`"user32.dll`")] public static extern bool SetForegroundWindow(IntPtr hWnd); }"
+        # ウインドウ制御のWin32 API（強制最大化と最前面化）
+        $csharpCode = @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class WindowHelper {
+            [DllImport("user32.dll")]
+            public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")]
+            public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+            [DllImport("user32.dll")]
+            public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")]
+            public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+            public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+        }
+"@
         Add-Type -TypeDefinition $csharpCode
 
         # --- ポップアップ表示関数 ---
@@ -103,18 +118,17 @@ jobs:
             } catch {}
         }
 
-        # 机のグレーを完全に弾き、本物の葉の緑だけを抽出するロジック
+        # 判定をより確実に（GがR,Bより高く、かつ輝度がある程度ある緑）
         function Get-GreenPixels ($path) {
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $count = 0
             for ($x = 0; $x -lt $img.Width; $x++) {
                 for ($y = 0; $y -lt $img.Height; $y++) {
                     $p = $img.GetPixel($x, $y)
-                    
-                    # 圧倒的に緑（G）が赤（R）や青（B）より強い（差が20以上）ピクセルだけを許可（タイポ修正済）
-                    if (($p.G -gt $p.R + 20) -and ($p.G -gt $p.B + 20)) {
+                    # 緑が他の色より明確に強く、暗すぎない条件
+                    if (($p.G -gt $p.R + 15) -and ($p.G -gt $p.B + 15) -and ($p.G -gt 40)) {
                         $h = $p.GetHue()
-                        if ($h -gt 55 -and $h -lt 170) { 
+                        if ($h -gt 60 -and $h -lt 165) { 
                             $count++ 
                         }
                     }
@@ -124,7 +138,7 @@ jobs:
             return $count
         }
 
-        # グラフを描画して保存する関数
+        # グラフ描画
         function Save-NegiChart ($stepCount, $pixelArray, $timeStr, $outputPath) {
             try {
                 $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
@@ -138,7 +152,7 @@ jobs:
                 
                 $maxVal = 1000
                 foreach ($val in $pixelArray) { if ($val -gt $maxVal) { $maxVal = $val } }
-                $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.2)
+                $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.3)
                 $chartArea.AxisY.Minimum = 0
                 $chart.ChartAreas.Add($chartArea)
 
@@ -163,8 +177,12 @@ jobs:
                     $y = $pixelArray[$i]
                     $sumX += $x ; $sumY += $y ; $sumXY += ($x * $y) ; $sumX2 += ($x * $x)
                 }
-                $slope = ($stepCount * $sumXY - $sumX * $sumY) / ($stepCount * $sumX2 - $sumX * $sumX)
-                $intercept = ($sumY - $slope * $sumX) / $stepCount
+                
+                $slope = 0; $intercept = 0
+                if (($stepCount * $sumX2 - $sumX * $sumX) -ne 0) {
+                    $slope = ($stepCount * $sumXY - $sumX * $sumY) / ($stepCount * $sumX2 - $sumX * $sumX)
+                    $intercept = ($sumY - $slope * $sumX) / $stepCount
+                }
 
                 for ($i = 0; $i -lt $stepCount; $i++) {
                     $seriesRaw.Points.AddXY($i, $pixelArray[$i])
@@ -187,26 +205,31 @@ jobs:
             } catch {}
         }
 
-        # 撮影処理（アプリの保存ラグを防ぐためにウェイトを大幅強化）
+        # 撮影処理（強制的にウインドウを最大化させて画面全体をキャプチャする）
         function Capture-Photo ($stepIndex) {
             Stop-Process -Name "Camera" -Force 2>$null
             Start-Sleep -Seconds 2
             powershell -Command "start microsoft.windows.camera:"
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 4
+            
+            # カメラアプリを探して「強制最大化(3)」にする
             $hwnd = [WindowHelper]::FindWindow("ApplicationFrameWindow", "カメラ")
             if ($hwnd -ne [IntPtr]::Zero) {
+                [WindowHelper]::ShowWindow($hwnd, 3) | Out-Null # 3 = SW_MAXIMIZE(最大化)
+                Start-Sleep -Seconds 1
                 [WindowHelper]::SetForegroundWindow($hwnd) | Out-Null
-                [WindowHelper]::ShowWindow($hwnd, 3)
             }
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 2
+            
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
-            $wshell.SendKeys("%c") # カメラ切り替え
-            Start-Sleep -Seconds 5
-            $wshell.SendKeys("%~") # 撮影実行
-            Start-Sleep -Seconds 6  # 保存完了までしっかり待つ
+            $wshell.SendKeys("%c") # カメラ切り替えキー
+            Start-Sleep -Seconds 4
+            $wshell.SendKeys("%~") # 撮影実行（Enter）
+            Start-Sleep -Seconds 5 # 保存を待つ
 
+            # 画面全体を完全にスクショする（最大化しているのでカメラ映像が確実に中央に入る）
             $now = Get-Date
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -218,8 +241,8 @@ jobs:
             $bitmap.Save($photoPath, [System.Drawing.Imaging.ImageFormat]::Png)
             $graphic.Dispose(); $bitmap.Dispose()
             
-            powershell -Command "Stop-Process -Name 'Camera' -Force"
-            Start-Sleep -Seconds 2
+            Stop-Process -Name "Camera" -Force 2>$null
+            Start-Sleep -Seconds 1
             
             return @($photoPath, $timeStr)
         }
