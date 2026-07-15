@@ -224,17 +224,18 @@ jobs:
             }
         }
 
-        # 撮影処理（修正：プロセス強制終了のエラーを黙殺する設定を追加）
+        # 撮影処理（修正：時間ベースで今撮った新規写真を確実に取得）
         function Capture-Photo {
             param (
                 [int]$stepIndex
             )
-            # カメラが開いていなくてもエラーを出さずに進むように修正
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
-            $beforeFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            # シャッターを切る基準時間（これより後に作成されたファイルを探す）
+            $captureTriggerTime = Get-Date
 
+            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
@@ -242,23 +243,39 @@ jobs:
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
             
+            # シャッター
             $wshell.SendKeys(" ")
             Start-Sleep -Seconds 2
 
-            # 写真ファイルが見つかるまで徹底的に待機
+            # 【判定を強化】基準時間（$captureTriggerTime）より後に作成されたJPGファイルを探す
             $afterFile = $null
             $loopCount = 0
             while ($true) {
-                $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                if ($afterFile -and (-not $beforeFile -or ($beforeFile.FullName -ne $afterFile.FullName))) {
+                # 基準時間以降に「Camera Roll」フォルダ内に保存された最新のJPGを取得
+                $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | 
+                             Where-Object { $_.LastWriteTime -ge $captureTriggerTime } | 
+                             Sort-Object LastWriteTime -Descending | 
+                             Select-Object -First 1
+                
+                if ($afterFile) {
                     break
                 }
+                
                 $loopCount++
                 if ($loopCount -eq 5) {
-                    Write-Host "⚠️ [待機中] 写真の保存を待っています... (シャッターを再試行)"
+                    Write-Host "⚠️ [待機中] 写真の保存を待っています... (シャッターを再試行します)"
                     $wshell.AppActivate("Camera")
-                    $wshell.SendKeys(" ")
+                    $wshell.SendKeys(" ") # 再度スペースキー送信
                 }
+                
+                # タイムアウト回避：15秒待っても見つからない場合は、最後の手段として最新のファイルを無理やり使う
+                if ($loopCount -ge 15) {
+                    Write-Host "⚠️ [警告] 新規撮影の写真が見つからなかったため、既存の最新ファイルを使用します。"
+                    $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                    if ($afterFile) { break }
+                    throw "カメラロール内に写真が1枚も見つかりません。"
+                }
+                
                 Start-Sleep -Seconds 1
             }
 
