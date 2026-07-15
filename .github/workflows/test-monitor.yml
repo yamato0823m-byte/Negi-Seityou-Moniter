@@ -13,7 +13,7 @@ jobs:
 
     - name: 2. Step-by-Step Growth Curve Monitor
       run: |
-        $ErrorActionPreference = "SilentlyContinue"
+        $ErrorActionPreference = "Continue"
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
         Add-Type -AssemblyName WindowsBase
@@ -25,14 +25,19 @@ jobs:
             New-Item -ItemType Directory -Path $cameraRollFolder | Out-Null
         }
 
-        # CSVのヘッダーも「割合(%)」が保存できるように変更
         $csvPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_growth_log.csv")
         if (-not (Test-Path $csvPath)) {
             "DateTime,Step,Green_Ratio_Percent,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
         # --- ポップアップ表示関数 ---
-        function Show-Guide ($title, $msg, $graphImgPath, $isFinal) {
+        function Show-Guide {
+            param (
+                [string]$title,
+                [string]$msg,
+                [string]$graphImgPath,
+                [bool]$isFinal
+            )
             try {
                 $form = New-Object System.Windows.Forms.Form
                 $form.Text = "NEGI MONITOR REALTIME MONITOR"
@@ -98,22 +103,25 @@ jobs:
                 $form.Close()
                 if ($pictureBox) { $pictureBox.Dispose(); $ms.Dispose() }
                 $form.Dispose()
-            } catch {}
+            } catch {
+                Write-Warning "Failed to show popup: $_"
+            }
         }
 
         # 緑色面積の割合（%）を計算する関数
-        function Get-GreenRatioPercent ($path) {
+        function Get-GreenRatioPercent {
+            param (
+                [string]$path
+            )
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenCount = 0
             $totalCount = 0
             
-            # 高速化のため2ピクセル間隔で走査
             for ($x = 0; $x -lt $img.Width; $x += 2) {
                 for ($y = 0; $y -lt $img.Height; $y += 2) {
                     $totalCount++
                     $p = $img.GetPixel($x, $y)
                     
-                    # 緑色の判別（RGBバランスを重視し、H値を35〜150度にする）
                     if (($p.G -gt $p.R) -and ($p.G -gt $p.B)) {
                         $h = $p.GetHue()
                         if ($h -ge 35 -and $h -le 150) {
@@ -125,14 +133,20 @@ jobs:
             $img.Dispose()
             
             if ($totalCount -eq 0) { return 0.0 }
-            # 割合（％）を小数点第2位まで計算
             $ratio = [math]::Round(($greenCount / $totalCount) * 100, 2)
             return $ratio
         }
 
-        # グラフ描画（縦軸を%に設定）
-        function Save-NegiChart ($stepCount, $ratioArray, $timeStr, $outputPath) {
+        # グラフ描画（引数を正しく受けるために paramブロックを追加）
+        function Save-NegiChart {
+            param (
+                [int]$stepCount,
+                [double[]]$ratioArray,
+                [string]$timeStr,
+                [string]$outputPath
+            )
             try {
+                Write-Host "Creating chart for $stepCount steps..."
                 $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
                 $chart.Size = New-Object System.Drawing.Size(500, 300)
                 $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
@@ -142,7 +156,6 @@ jobs:
                 $chartArea.AxisX.Maximum = 4
                 $chartArea.AxisY.Title = "Green Area Ratio (%)"
                 
-                # 縦軸の最大値を、測定した最大割合に応じて適切にスケーリング
                 $maxVal = 10.0
                 foreach ($val in $ratioArray) { if ($val -gt $maxVal) { $maxVal = $val } }
                 $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.2)
@@ -195,11 +208,17 @@ jobs:
 
                 $chart.SaveImage($outputPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
                 $chart.Dispose()
-            } catch {}
+                Write-Host "Chart saved to $outputPath"
+            } catch {
+                Write-Warning "Failed to save chart: $_"
+            }
         }
 
-        # 撮影処理（アプリ保存の純粋なJPGを使用）
-        function Capture-Photo ($stepIndex) {
+        # 撮影処理
+        function Capture-Photo {
+            param (
+                [int]$stepIndex
+            )
             Stop-Process -Name "Camera" -Force 2>$null
             Start-Sleep -Seconds 1
             
@@ -237,7 +256,7 @@ jobs:
         }
 
         # --- 実験スタート ---
-        $allRatios = @()
+        [double[]]$allRatios = @()
 
         # 1回目〜3回目（0枚、1枚、2枚）
         $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
@@ -246,12 +265,13 @@ jobs:
             $result = Capture-Photo -stepIndex $i
             $ratio = Get-GreenRatioPercent -path $result[0]
             $allRatios += $ratio
+            Write-Host "Step $i calculated green ratio: $ratio %"
         }
 
         # 中間プロット
         $midTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
         $midGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_mid_${midTime}.png")
-        Save-NegiChart -stepCount 3 -pixelArray $allRatios -timeStr $midTime -outputPath $midGraphPath
+        Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
         Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
 
         # 4回目〜5回目（3枚、4枚）
@@ -261,12 +281,13 @@ jobs:
             $result = Capture-Photo -stepIndex $i
             $ratio = Get-GreenRatioPercent -path $result[0]
             $allRatios += $ratio
+            Write-Host "Step $i calculated green ratio: $ratio %"
         }
 
         # 最終プロット
         $finalTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
         $finalGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_final_${finalTime}.png")
-        Save-NegiChart -stepCount 5 -pixelArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
+        Save-NegiChart -stepCount 5 -ratioArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
         Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
 
         exit 0
