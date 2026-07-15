@@ -108,28 +108,45 @@ jobs:
             }
         }
 
-        # 緑色面積の割合（%）を計算する関数（照明に強いロジックへ改善）
+        # 緑色面積の割合（%）を計算する関数（限界まで広げた高感度HSV判定）
         function Get-GreenRatioPercent {
             param (
                 [string]$path
             )
+            if (-not (Test-Path $path)) {
+                Write-Warning "Image file not found: $path"
+                return 0.0
+            }
+
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenCount = 0
             $totalCount = 0
+
+            # デバッグ用に中心付近のピクセル色をコンソールに出力
+            $midX = [int]($img.Width / 2)
+            $midY = [int]($img.Height / 2)
+            $testPixel = $img.GetPixel($midX, $midY)
+            $th = $testPixel.GetHue()
+            $ts = $testPixel.GetSaturation()
+            $tb = $testPixel.GetBrightness()
+            Write-Host "Debug - Image resolution: $($img.Width)x$($img.Height)"
+            Write-Host "Debug - Center Pixel Color -> H:$([math]::Round($th,1))° S:$([math]::Round($ts*100,1))% B:$([math]::Round($tb*100,1))%"
             
             for ($x = 0; $x -lt $img.Width; $x += 2) {
                 for ($y = 0; $y -lt $img.Height; $y += 2) {
                     $totalCount++
                     $p = $img.GetPixel($x, $y)
                     
-                    # 1. 色相（Hue）が緑〜黄緑の範囲（35度〜155度）
-                    $h = $p.GetHue()
-                    # 2. 彩度（Saturation）がある程度あり、グレーや白黒ではない（0.15以上）
-                    $s = $p.GetSaturation()
-                    # 3. 明るさ（Brightness）が暗すぎず明るすぎない（0.1以上、0.95以下）
-                    $b = $p.GetBrightness()
+                    $h = $p.GetHue()          # 0.0 ~ 360.0
+                    $s = $p.GetSaturation()   # 0.0 ~ 1.0
+                    $b = $p.GetBrightness()   # 0.0 ~ 1.0
 
-                    if (($h -ge 35 -and $h -le 155) -and ($s -ge 0.15) -and ($b -ge 0.1 -and $b -le 0.95)) {
+                    # 誤検知を防ぐ限界まで広げた「超広域」緑色しきい値
+                    $isGreenHue = ($h -ge 25 -and $h -le 165)
+                    $isGreenSat = ($s -ge 0.05)
+                    $isGreenBri = ($b -ge 0.03 -and $b -le 0.98)
+
+                    if ($isGreenHue -and $isGreenSat -and $isGreenBri) {
                         $greenCount++
                     }
                 }
@@ -152,7 +169,7 @@ jobs:
             try {
                 Write-Host "Creating chart for $stepCount steps..."
                 $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
-                $chart.Size = New-Object System.Drawing.Size(500, 300)
+                $chart.Size = New-Object System.Drawing.Size(500, 320)
                 $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
                 $chartArea.AxisX.Title = "Leaf Count"
                 $chartArea.AxisX.Interval = 1
@@ -160,10 +177,11 @@ jobs:
                 $chartArea.AxisX.Maximum = 4
                 $chartArea.AxisY.Title = "Green Area Ratio (%)"
                 
-                # 縦軸の最大値を自動で適正化（すべて0％の場合は10％固定にする）
-                $maxVal = 2.0
+                # スケール自動調整
+                $maxVal = 1.0
                 foreach ($val in $ratioArray) { if ($val -gt $maxVal) { $maxVal = $val } }
-                $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.2)
+                $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.3)
+                if ($chartArea.AxisY.Maximum -lt 1) { $chartArea.AxisY.Maximum = 5.0 }
                 $chartArea.AxisY.Minimum = 0
                 $chart.ChartAreas.Add($chartArea)
 
@@ -203,13 +221,22 @@ jobs:
                 }
 
                 $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
+                $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.LegendSeparatorStyle]::None
                 $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
                 $chart.Legends.Add($legend)
 
+                # メインタイトル
                 $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
                 $title.Text = "Leaf Area Ratio Graph (Steps: 1 to $stepCount)"
                 $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
                 $chart.Titles.Add($title)
+
+                # 判定条件サブタイトル (広げたHSV基準情報)
+                $subtitle = New-Object System.Windows.Forms.DataVisualization.Charting.Title
+                $subtitle.Text = "Green Threshold: H[25-165°] S[>=5%] B[3-98%]"
+                $subtitle.Font = New-Object System.Drawing.Font("Arial", 8.5, [System.Drawing.FontStyle]::Regular)
+                $subtitle.ForeColor = [System.Drawing.Color]::DarkGreen
+                $chart.Titles.Add($subtitle)
 
                 $chart.SaveImage($outputPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
                 $chart.Dispose()
