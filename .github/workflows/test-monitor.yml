@@ -108,7 +108,7 @@ jobs:
             }
         }
 
-        # 緑色面積の割合（%）を計算する関数
+        # 緑色面積の割合（%）を計算する関数（照明に強いロジックへ改善）
         function Get-GreenRatioPercent {
             param (
                 [string]$path
@@ -122,11 +122,15 @@ jobs:
                     $totalCount++
                     $p = $img.GetPixel($x, $y)
                     
-                    if (($p.G -gt $p.R) -and ($p.G -gt $p.B)) {
-                        $h = $p.GetHue()
-                        if ($h -ge 35 -and $h -le 150) {
-                            $greenCount++
-                        }
+                    # 1. 色相（Hue）が緑〜黄緑の範囲（35度〜155度）
+                    $h = $p.GetHue()
+                    # 2. 彩度（Saturation）がある程度あり、グレーや白黒ではない（0.15以上）
+                    $s = $p.GetSaturation()
+                    # 3. 明るさ（Brightness）が暗すぎず明るすぎない（0.1以上、0.95以下）
+                    $b = $p.GetBrightness()
+
+                    if (($h -ge 35 -and $h -le 155) -and ($s -ge 0.15) -and ($b -ge 0.1 -and $b -le 0.95)) {
+                        $greenCount++
                     }
                 }
             }
@@ -137,7 +141,7 @@ jobs:
             return $ratio
         }
 
-        # グラフ描画（引数を正しく受けるために paramブロックを追加）
+        # グラフ描画
         function Save-NegiChart {
             param (
                 [int]$stepCount,
@@ -156,7 +160,8 @@ jobs:
                 $chartArea.AxisX.Maximum = 4
                 $chartArea.AxisY.Title = "Green Area Ratio (%)"
                 
-                $maxVal = 10.0
+                # 縦軸の最大値を自動で適正化（すべて0％の場合は10％固定にする）
+                $maxVal = 2.0
                 foreach ($val in $ratioArray) { if ($val -gt $maxVal) { $maxVal = $val } }
                 $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.2)
                 $chartArea.AxisY.Minimum = 0
