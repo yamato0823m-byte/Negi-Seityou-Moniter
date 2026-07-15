@@ -13,7 +13,7 @@ jobs:
 
     - name: 2. Step-by-Step Growth Curve Monitor
       run: |
-        $ErrorActionPreference = "Continue"
+        $ErrorActionPreference = "Stop"
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
         Add-Type -AssemblyName WindowsBase
@@ -108,45 +108,30 @@ jobs:
             }
         }
 
-        # 緑色面積の割合（%）を計算する関数（限界まで広げた高感度HSV判定）
+        # 緑色面積の割合（%）を計算する関数
         function Get-GreenRatioPercent {
             param (
                 [string]$path
             )
             if (-not (Test-Path $path)) {
-                Write-Warning "Image file not found: $path"
-                return 0.0
+                throw "Image file not found: $path"
             }
 
             $img = [System.Drawing.Bitmap]::FromFile($path)
             $greenCount = 0
             $totalCount = 0
-
-            # デバッグ用に中心付近のピクセル色をコンソールに出力
-            $midX = [int]($img.Width / 2)
-            $midY = [int]($img.Height / 2)
-            $testPixel = $img.GetPixel($midX, $midY)
-            $th = $testPixel.GetHue()
-            $ts = $testPixel.GetSaturation()
-            $tb = $testPixel.GetBrightness()
-            Write-Host "Debug - Image resolution: $($img.Width)x$($img.Height)"
-            Write-Host "Debug - Center Pixel Color -> H:$([math]::Round($th,1))° S:$([math]::Round($ts*100,1))% B:$([math]::Round($tb*100,1))%"
             
             for ($x = 0; $x -lt $img.Width; $x += 2) {
                 for ($y = 0; $y -lt $img.Height; $y += 2) {
                     $totalCount++
                     $p = $img.GetPixel($x, $y)
                     
-                    $h = $p.GetHue()          # 0.0 ~ 360.0
-                    $s = $p.GetSaturation()   # 0.0 ~ 1.0
-                    $b = $p.GetBrightness()   # 0.0 ~ 1.0
+                    $h = $p.GetHue()
+                    $s = $p.GetSaturation()
+                    $b = $p.GetBrightness()
 
-                    # 誤検知を防ぐ限界まで広げた「超広域」緑色しきい値
-                    $isGreenHue = ($h -ge 25 -and $h -le 165)
-                    $isGreenSat = ($s -ge 0.05)
-                    $isGreenBri = ($b -ge 0.03 -and $b -le 0.98)
-
-                    if ($isGreenHue -and $isGreenSat -and $isGreenBri) {
+                    # 限界拡張したHSV（HSL）しきい値
+                    if (($h -ge 25 -and $h -le 165) -and ($s -ge 0.05) -and ($b -ge 0.03 -and $b -le 0.98)) {
                         $greenCount++
                     }
                 }
@@ -154,8 +139,7 @@ jobs:
             $img.Dispose()
             
             if ($totalCount -eq 0) { return 0.0 }
-            $ratio = [math]::Round(($greenCount / $totalCount) * 100, 2)
-            return $ratio
+            return [math]::Round(($greenCount / $totalCount) * 100, 2)
         }
 
         # グラフ描画
@@ -167,7 +151,6 @@ jobs:
                 [string]$outputPath
             )
             try {
-                Write-Host "Creating chart for $stepCount steps..."
                 $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
                 $chart.Size = New-Object System.Drawing.Size(500, 320)
                 $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
@@ -177,11 +160,10 @@ jobs:
                 $chartArea.AxisX.Maximum = 4
                 $chartArea.AxisY.Title = "Green Area Ratio (%)"
                 
-                # スケール自動調整
                 $maxVal = 1.0
                 foreach ($val in $ratioArray) { if ($val -gt $maxVal) { $maxVal = $val } }
                 $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.3)
-                if ($chartArea.AxisY.Maximum -lt 1) { $chartArea.AxisY.Maximum = 5.0 }
+                if ($chartArea.AxisY.Maximum -lt 5.0) { $chartArea.AxisY.Maximum = 40.0 } # 縦軸の上限を実態に合わせて40%程度に設定
                 $chartArea.AxisY.Minimum = 0
                 $chart.ChartAreas.Add($chartArea)
 
@@ -221,32 +203,28 @@ jobs:
                 }
 
                 $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
-                $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.LegendSeparatorStyle]::None
                 $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
                 $chart.Legends.Add($legend)
 
-                # メインタイトル
                 $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
                 $title.Text = "Leaf Area Ratio Graph (Steps: 1 to $stepCount)"
                 $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
                 $chart.Titles.Add($title)
 
-                # 判定条件サブタイトル (広げたHSV基準情報)
                 $subtitle = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-                $subtitle.Text = "Green Threshold: H[25-165°] S[>=5%] B[3-98%]"
+                $subtitle.Text = "Green Threshold: H[25-165] S[>=5%] B[3-98%]"
                 $subtitle.Font = New-Object System.Drawing.Font("Arial", 8.5, [System.Drawing.FontStyle]::Regular)
                 $subtitle.ForeColor = [System.Drawing.Color]::DarkGreen
                 $chart.Titles.Add($subtitle)
 
                 $chart.SaveImage($outputPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
                 $chart.Dispose()
-                Write-Host "Chart saved to $outputPath"
             } catch {
                 Write-Warning "Failed to save chart: $_"
             }
         }
 
-        # 撮影処理
+        # 撮影処理（修正版：写真が見つかるまで無限ループで待機）
         function Capture-Photo {
             param (
                 [int]$stepIndex
@@ -254,37 +232,58 @@ jobs:
             Stop-Process -Name "Camera" -Force 2>$null
             Start-Sleep -Seconds 1
             
+            # 撮影前の最新ファイルを取得
             $beforeFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
+            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
             $wshell = New-Object -ComObject Wscript.Shell
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
-            $wshell.SendKeys("%~")
-            Start-Sleep -Seconds 4
-
-            $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             
+            # シャッターを切る (Spaceキーを送信)
+            $wshell.SendKeys(" ")
+            Start-Sleep -Seconds 2
+
+            # 【重要】写真ファイルがフォルダ内に生成されるまで「確実に見つかるまで」ループ待機
+            $afterFile = $null
+            $loopCount = 0
+            while ($true) {
+                $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                
+                # 撮影前と異なる新しいファイルが保存されたら待機を抜ける
+                if ($afterFile -and (-not $beforeFile -or ($beforeFile.FullName -ne $afterFile.FullName))) {
+                    break
+                }
+                
+                $loopCount++
+                if ($loopCount -eq 5) {
+                    Write-Host "⚠️ [待機中] OneDrive同期またはカメラの保存を待っています... (シャッターを再試行します)"
+                    $wshell.AppActivate("Camera")
+                    $wshell.SendKeys(" ") # 念のためもう一度シャッターキーを送信
+                }
+                Start-Sleep -Seconds 1
+            }
+
             $now = Get-Date
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
             $finalPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${stepIndex}_${timeStr}.jpg")
 
-            if ($beforeFile -and $afterFile -and ($beforeFile.FullName -eq $afterFile.FullName)) {
-                $wshell.SendKeys("%~")
-                Start-Sleep -Seconds 4
-                $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            }
-
-            if ($afterFile) {
-                Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
-            }
+            # ファイルが完全に出力完了するのを待つため、1秒追加待機してからコピー
+            Start-Sleep -Seconds 1
+            Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
 
             Stop-Process -Name "Camera" -Force 2>$null
             Start-Sleep -Seconds 1
             
-            return @($finalPath, $timeStr)
+            Write-Host "====================="
+            Write-Host "Photo Successfully Captured!"
+            Write-Host "Path: $finalPath"
+            Write-Host "====================="
+
+            return ,@($finalPath, $timeStr)
         }
 
         # --- 実験スタート ---
@@ -294,8 +293,9 @@ jobs:
         $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
         for ($i = 0; $i -lt 3; $i++) {
             Show-Guide -title "Capturing Step $($i+1)" -msg $instructions1[$i] -graphImgPath $null -isFinal $false
-            $result = Capture-Photo -stepIndex $i
-            $ratio = Get-GreenRatioPercent -path $result[0]
+            $res = Capture-Photo -stepIndex $i
+            $path = $res[0]
+            $ratio = Get-GreenRatioPercent -path $path
             $allRatios += $ratio
             Write-Host "Step $i calculated green ratio: $ratio %"
         }
@@ -310,8 +310,9 @@ jobs:
         $instructions2 = @("Place 3 leaves on the desk.", "Place 4 leaves on the desk.")
         for ($i = 3; $i -lt 5; $i++) {
             Show-Guide -title "Capturing Step $($i+1)" -msg $instructions2[$i-3] -graphImgPath $null -isFinal $false
-            $result = Capture-Photo -stepIndex $i
-            $ratio = Get-GreenRatioPercent -path $result[0]
+            $res = Capture-Photo -stepIndex $i
+            $path = $res[0]
+            $ratio = Get-GreenRatioPercent -path $path
             $allRatios += $ratio
             Write-Host "Step $i calculated green ratio: $ratio %"
         }
