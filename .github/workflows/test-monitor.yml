@@ -130,7 +130,7 @@ jobs:
                     $s = $p.GetSaturation()
                     $b = $p.GetBrightness()
 
-                    # 限界拡張したHSV（HSL）しきい値
+                    # 限界拡張したHSVしきい値
                     if (($h -ge 25 -and $h -le 165) -and ($s -ge 0.05) -and ($b -ge 0.03 -and $b -le 0.98)) {
                         $greenCount++
                     }
@@ -163,7 +163,7 @@ jobs:
                 $maxVal = 1.0
                 foreach ($val in $ratioArray) { if ($val -gt $maxVal) { $maxVal = $val } }
                 $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.3)
-                if ($chartArea.AxisY.Maximum -lt 5.0) { $chartArea.AxisY.Maximum = 40.0 } # 縦軸の上限を実態に合わせて40%程度に設定
+                if ($chartArea.AxisY.Maximum -lt 5.0) { $chartArea.AxisY.Maximum = 40.0 }
                 $chartArea.AxisY.Minimum = 0
                 $chart.ChartAreas.Add($chartArea)
 
@@ -224,18 +224,17 @@ jobs:
             }
         }
 
-        # 撮影処理（修正版：写真が見つかるまで無限ループで待機）
+        # 撮影処理（修正：プロセス強制終了のエラーを黙殺する設定を追加）
         function Capture-Photo {
             param (
                 [int]$stepIndex
             )
-            Stop-Process -Name "Camera" -Force 2>$null
+            # カメラが開いていなくてもエラーを出さずに進むように修正
+            Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
-            # 撮影前の最新ファイルを取得
             $beforeFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
@@ -243,26 +242,22 @@ jobs:
             $wshell.AppActivate("Camera")
             Start-Sleep -Seconds 1
             
-            # シャッターを切る (Spaceキーを送信)
             $wshell.SendKeys(" ")
             Start-Sleep -Seconds 2
 
-            # 【重要】写真ファイルがフォルダ内に生成されるまで「確実に見つかるまで」ループ待機
+            # 写真ファイルが見つかるまで徹底的に待機
             $afterFile = $null
             $loopCount = 0
             while ($true) {
                 $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                
-                # 撮影前と異なる新しいファイルが保存されたら待機を抜ける
                 if ($afterFile -and (-not $beforeFile -or ($beforeFile.FullName -ne $afterFile.FullName))) {
                     break
                 }
-                
                 $loopCount++
                 if ($loopCount -eq 5) {
-                    Write-Host "⚠️ [待機中] OneDrive同期またはカメラの保存を待っています... (シャッターを再試行します)"
+                    Write-Host "⚠️ [待機中] 写真の保存を待っています... (シャッターを再試行)"
                     $wshell.AppActivate("Camera")
-                    $wshell.SendKeys(" ") # 念のためもう一度シャッターキーを送信
+                    $wshell.SendKeys(" ")
                 }
                 Start-Sleep -Seconds 1
             }
@@ -271,11 +266,10 @@ jobs:
             $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
             $finalPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${stepIndex}_${timeStr}.jpg")
 
-            # ファイルが完全に出力完了するのを待つため、1秒追加待機してからコピー
             Start-Sleep -Seconds 1
             Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
 
-            Stop-Process -Name "Camera" -Force 2>$null
+            Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
             Write-Host "====================="
