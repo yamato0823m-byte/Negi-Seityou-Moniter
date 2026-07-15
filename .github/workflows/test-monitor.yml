@@ -1,7 +1,7 @@
 name: Negi Monitor Test
 
 on:
-  workflow_dispatch:
+  workflow_dispatch
 
 jobs:
   run-monitor:
@@ -24,6 +24,12 @@ jobs:
         if (-not (Test-Path $cameraRollFolder)) {
             New-Item -ItemType Directory -Path $cameraRollFolder | Out-Null
         }
+
+        Write-Host "--- SYSTEM INFO ---"
+        Write-Host "Target Camera Roll Directory: $cameraRollFolder"
+        $initialFiles = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg"
+        Write-Host "Current JPG count in folder: $($initialFiles.Count)"
+        Write-Host "-------------------"
 
         $csvPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_growth_log.csv")
         if (-not (Test-Path $csvPath)) {
@@ -224,56 +230,75 @@ jobs:
             }
         }
 
-        # 撮影処理（修正：時間ベースで今撮った新規写真を確実に取得）
+        # 撮影処理（修正：2回撮影されてしまう現象を防ぐため、キー入力をスペース1回のみに修正）
         function Capture-Photo {
             param (
                 [int]$stepIndex
             )
+            # カメラを閉じる
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
-            # シャッターを切る基準時間（これより後に作成されたファイルを探す）
+            # シャッターを切る前の時間
             $captureTriggerTime = Get-Date
+            Write-Host "[DEBUG] Step $stepIndex: Capture trigger time is $captureTriggerTime"
 
             # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
             $wshell = New-Object -ComObject Wscript.Shell
-            $wshell.AppActivate("Camera")
+            
+            # カメラを確実にアクティブにする
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                $activated = $wshell.AppActivate("Camera")
+                if ($activated) {
+                    Write-Host "[DEBUG] Camera App Activated on attempt $attempt"
+                    break
+                }
+                Start-Sleep -Seconds 1
+            }
             Start-Sleep -Seconds 1
             
-            # シャッター
+            # シャッター押下（重複撮影を防ぐため、スペースキーのみを1回送信）
+            Write-Host "[DEBUG] Sending single Space key for shutter..."
             $wshell.SendKeys(" ")
             Start-Sleep -Seconds 2
 
-            # 【判定を強化】基準時間（$captureTriggerTime）より後に作成されたJPGファイルを探す
+            # 新しい写真が検出されるのを待つループ
             $afterFile = $null
             $loopCount = 0
             while ($true) {
-                # 基準時間以降に「Camera Roll」フォルダ内に保存された最新のJPGを取得
+                # 基準時間以降に作成された最新のJPGを取得
                 $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | 
                              Where-Object { $_.LastWriteTime -ge $captureTriggerTime } | 
                              Sort-Object LastWriteTime -Descending | 
                              Select-Object -First 1
                 
                 if ($afterFile) {
+                    Write-Host "[DEBUG] New photo detected: $($afterFile.Name) (Created: $($afterFile.LastWriteTime))"
                     break
                 }
                 
                 $loopCount++
-                if ($loopCount -eq 5) {
-                    Write-Host "⚠️ [待機中] 写真の保存を待っています... (シャッターを再試行します)"
-                    $wshell.AppActivate("Camera")
-                    $wshell.SendKeys(" ") # 再度スペースキー送信
+                Write-Host "[DEBUG] Checking... elapsed: ${loopCount}s (No new photo yet)"
+                
+                if ($loopCount -eq 4) {
+                    # 4秒経っても撮れていなければ、もう一度フォーカスして再試行
+                    Write-Host "⚠️ [待機中] カメラが反応していない可能性があるため、再度シャッターを切ります。"
+                    [void]$wshell.AppActivate("Camera")
+                    $wshell.SendKeys(" ")
                 }
                 
-                # タイムアウト回避：15秒待っても見つからない場合は、最後の手段として最新のファイルを無理やり使う
-                if ($loopCount -ge 15) {
-                    Write-Host "⚠️ [警告] 新規撮影の写真が見つからなかったため、既存の最新ファイルを使用します。"
+                # 10秒待っても新しい写真が見つからない場合は、フォールバック（既存の最新JPGを使う）
+                if ($loopCount -ge 10) {
+                    Write-Host "⚠️ [警告] 新しい写真が確認できませんでした。フォールバック処理としてフォルダー内の最新画像を使用します。"
                     $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                    if ($afterFile) { break }
-                    throw "カメラロール内に写真が1枚も見つかりません。"
+                    if ($afterFile) {
+                        Write-Host "[DEBUG] Fallback image found: $($afterFile.Name) (LastModified: $($afterFile.LastWriteTime))"
+                        break
+                    }
+                    throw "カメラロールフォルダ ($cameraRollFolder) 内に写真が1枚も存在しません。"
                 }
                 
                 Start-Sleep -Seconds 1
@@ -286,12 +311,13 @@ jobs:
             Start-Sleep -Seconds 1
             Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
 
+            # カメラを閉じる
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
             Write-Host "====================="
-            Write-Host "Photo Successfully Captured!"
-            Write-Host "Path: $finalPath"
+            Write-Host "Photo Successfully Processed!"
+            Write-Host "Assigned Path: $finalPath"
             Write-Host "====================="
 
             return ,@($finalPath, $timeStr)
