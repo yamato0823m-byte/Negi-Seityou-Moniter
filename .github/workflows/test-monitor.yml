@@ -236,19 +236,25 @@ jobs:
             param (
                 [int]$stepIndex
             )
+            # 既存のカメラを閉じる
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
             $captureTriggerTime = Get-Date
             Write-Host "[DEBUG] Step ${stepIndex} - Capture trigger time: $captureTriggerTime"
 
+            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 4
             
             $wshell = New-Object -ComObject Wscript.Shell
             
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
+            # カメラアプリを最前面に持ってくる処理
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
                 $activated = $wshell.AppActivate("Camera")
+                if (-not $activated) {
+                    $activated = $wshell.AppActivate("カメラ")
+                }
                 if ($activated) {
                     Write-Host "[DEBUG] Camera App Activated on attempt $attempt"
                     break
@@ -257,8 +263,9 @@ jobs:
             }
             Start-Sleep -Seconds 1
             
-            Write-Host "[DEBUG] Sending single Space key for shutter..."
-            $wshell.SendKeys(" ")
+            # 確実にシャッターを切る（Enterキーを送信）
+            Write-Host "[DEBUG] Sending Enter key for shutter..."
+            $wshell.SendKeys("{ENTER}")
             Start-Sleep -Seconds 2
 
             $afterFile = $null
@@ -277,10 +284,11 @@ jobs:
                 $loopCount++
                 Write-Host "[DEBUG] Checking... elapsed: ${loopCount}s (No new photo yet)"
                 
-                if ($loopCount -eq 4) {
-                    Write-Host "[RETRY] Resending shutter key..."
+                if ($loopCount -eq 3 -or $loopCount -eq 6) {
+                    Write-Host "[RETRY] Reactivating and resending Enter key..."
                     [void]$wshell.AppActivate("Camera")
-                    $wshell.SendKeys(" ")
+                    [void]$wshell.AppActivate("カメラ")
+                    $wshell.SendKeys("{ENTER}")
                 }
                 
                 if ($loopCount -ge 10) {
