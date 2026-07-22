@@ -19,23 +19,46 @@ jobs:
         Add-Type -AssemblyName WindowsBase
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
-        # OneDriveを回避し、ローカルPCの「C:\Users\ユーザー名\Pictures\Camera Roll」を直接指定
         $userProfile = $env:USERPROFILE
-        $cameraRollFolder = Join-Path $userProfile "Pictures\Camera Roll"
+        
+        # 写真が保存される可能性のある候補フォルダを一覧化
+        $possibleFolders = @(
+            (Join-Path $userProfile "Pictures\Camera Roll"),
+            (Join-Path $userProfile "Pictures\カメラロール"),
+            (Join-Path $userProfile "OneDrive\Pictures\Camera Roll"),
+            (Join-Path $userProfile "OneDrive\ピクチャ\カメラロール"),
+            (Join-Path $userProfile "OneDrive\Pictures\カメラロール")
+        )
 
-        if (-not (Test-Path $cameraRollFolder)) {
-            New-Item -ItemType Directory -Path $cameraRollFolder -Force | Out-Null
+        # 実験ログ用・基本出力フォルダの設定（存在しない場合は作成）
+        $baseFolder = Join-Path $userProfile "Pictures\Camera Roll"
+        if (-not (Test-Path $baseFolder)) {
+            New-Item -ItemType Directory -Path $baseFolder -Force | Out-Null
         }
 
-        Write-Host "--- SYSTEM INFO ---"
-        Write-Host "Target Camera Roll Directory: $cameraRollFolder"
-        $initialFiles = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" -ErrorAction SilentlyContinue
-        Write-Host "Current JPG count in folder: $($initialFiles.Count)"
-        Write-Host "-------------------"
-
-        $csvPath = Join-Path $cameraRollFolder "negi_growth_log.csv"
+        $csvPath = Join-Path $baseFolder "negi_growth_log.csv"
         if (-not (Test-Path $csvPath)) {
             "DateTime,Step,Green_Ratio_Percent,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
+        }
+
+        # 全候補フォルダから最新のJPGを探す関数
+        function Get-LatestPhoto {
+            param (
+                [datetime]$afterTime
+            )
+            $latestFile = $null
+            foreach ($folder in $possibleFolders) {
+                if (Test-Path $folder) {
+                    $file = Get-ChildItem -Path $folder -Filter "*.jpg" -ErrorAction SilentlyContinue |
+                            Where-Object { $_.LastWriteTime -ge $afterTime } |
+                            Sort-Object LastWriteTime -Descending |
+                            Select-Object -First 1
+                    if ($file -and (-not $latestFile -or $file.LastWriteTime -gt $latestFile.LastWriteTime)) {
+                        $latestFile = $file
+                    }
+                }
+            }
+            return $latestFile
         }
 
         # --- ポップアップ表示関数 ---
@@ -96,7 +119,7 @@ jobs:
                 $form.Controls.Add($lblTimer)
 
                 $form.Show()
-                $maxTime = 15
+                $maxTime = 12
                 for ($countdown = $maxTime; $countdown -gt 0; $countdown--) {
                     if ($isFinal) {
                         $lblTimer.ForeColor = [System.Drawing.Color]::LightBlue
@@ -231,82 +254,59 @@ jobs:
             }
         }
 
-        # 撮影処理
+        # 1撮影の処理
         function Capture-Photo {
             param (
                 [int]$stepIndex
             )
-            # 既存のカメラを閉じる
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
             $captureTriggerTime = Get-Date
             Write-Host "[DEBUG] Step ${stepIndex} - Capture trigger time: $captureTriggerTime"
 
-            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 4
             
             $wshell = New-Object -ComObject Wscript.Shell
-            
-            # カメラアプリを最前面に持ってくる処理
-            for ($attempt = 1; $attempt -le 5; $attempt++) {
-                $activated = $wshell.AppActivate("Camera")
-                if (-not $activated) {
-                    $activated = $wshell.AppActivate("カメラ")
-                }
-                if ($activated) {
-                    Write-Host "[DEBUG] Camera App Activated on attempt $attempt"
-                    break
-                }
-                Start-Sleep -Seconds 1
-            }
+            [void]$wshell.AppActivate("Camera")
+            [void]$wshell.AppActivate("カメラ")
             Start-Sleep -Seconds 1
             
-            # 確実にシャッターを切る（Enterキーを送信）
-            Write-Host "[DEBUG] Sending Enter key for shutter..."
+            # 1回だけシャッターを切る（Enterキー）
+            Write-Host "[DEBUG] Sending 1 shutter key..."
             $wshell.SendKeys("{ENTER}")
-            Start-Sleep -Seconds 2
 
             $afterFile = $null
-            $loopCount = 0
-            while ($true) {
-                $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | 
-                             Where-Object { $_.LastWriteTime -ge $captureTriggerTime } | 
-                             Sort-Object LastWriteTime -Descending | 
-                             Select-Object -First 1
-                
+            for ($i = 1; $i -le 10; $i++) {
+                Start-Sleep -Seconds 1
+                $afterFile = Get-LatestPhoto -afterTime $captureTriggerTime
                 if ($afterFile) {
-                    Write-Host "[DEBUG] New photo detected: $($afterFile.Name) (Created: $($afterFile.LastWriteTime))"
+                    Write-Host "[DEBUG] Photo detected at: $($afterFile.FullName)"
                     break
                 }
-                
-                $loopCount++
-                Write-Host "[DEBUG] Checking... elapsed: ${loopCount}s (No new photo yet)"
-                
-                if ($loopCount -eq 3 -or $loopCount -eq 6) {
-                    Write-Host "[RETRY] Reactivating and resending Enter key..."
-                    [void]$wshell.AppActivate("Camera")
-                    [void]$wshell.AppActivate("カメラ")
-                    $wshell.SendKeys("{ENTER}")
-                }
-                
-                if ($loopCount -ge 10) {
-                    Write-Host "[FALLBACK] Using latest existing photo."
-                    $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                    if ($afterFile) {
-                        Write-Host "[DEBUG] Fallback image found: $($afterFile.Name)"
-                        break
+                Write-Host "[DEBUG] Waiting for photo save... (${i}s)"
+            }
+
+            if (-not $afterFile) {
+                # 全候補フォルダから過去の一番新しい写真を取得するフォールバック
+                foreach ($folder in $possibleFolders) {
+                    if (Test-Path $folder) {
+                        $f = Get-ChildItem -Path $folder -Filter "*.jpg" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                        if ($f -and (-not $afterFile -or $f.LastWriteTime -gt $afterFile.LastWriteTime)) {
+                            $afterFile = $f
+                        }
                     }
-                    throw "No JPG photos found in camera roll directory: $cameraRollFolder"
                 }
-                
-                Start-Sleep -Seconds 1
+            }
+
+            if (-not $afterFile) {
+                throw "No photo file detected after capture."
             }
 
             $now = Get-Date
             $timeStr = $now.ToString('yyyy.M.d_H.mm.ss')
-            $finalPath = Join-Path $cameraRollFolder "negi_step_${stepIndex}_${timeStr}.jpg"
+            $finalPath = Join-Path $baseFolder "negi_step_${stepIndex}_${timeStr}.jpg"
 
             Start-Sleep -Seconds 1
             Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
@@ -337,9 +337,9 @@ jobs:
             Write-Host "Step $i calculated green ratio: $ratio %"
         }
 
-        # 中間プロット
+        # 中間プロット（3ステップ完了時点）
         $midTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $midGraphPath = Join-Path $cameraRollFolder "negi_graph_mid_${midTime}.png"
+        $midGraphPath = Join-Path $baseFolder "negi_graph_mid_${midTime}.png"
         Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
         Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
 
@@ -355,9 +355,9 @@ jobs:
             Write-Host "Step $i calculated green ratio: $ratio %"
         }
 
-        # 最終プロット
+        # 最終プロット（全5ステップ完了時点）
         $finalTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $finalGraphPath = Join-Path $cameraRollFolder "negi_graph_final_${finalTime}.png"
+        $finalGraphPath = Join-Path $baseFolder "negi_graph_final_${finalTime}.png"
         Save-NegiChart -stepCount 5 -ratioArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
         Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
 
