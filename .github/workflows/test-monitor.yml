@@ -1,7 +1,7 @@
 name: Negi Monitor Test
 
 on:
-  workflow_dispatch
+  workflow_dispatch:
 
 jobs:
   run-monitor:
@@ -136,7 +136,6 @@ jobs:
                     $s = $p.GetSaturation()
                     $b = $p.GetBrightness()
 
-                    # 限界拡張したHSVしきい値
                     if (($h -ge 25 -and $h -le 165) -and ($s -ge 0.05) -and ($b -ge 0.03 -and $b -le 0.98)) {
                         $greenCount++
                     }
@@ -230,26 +229,22 @@ jobs:
             }
         }
 
-        # 撮影処理（修正：2回撮影されてしまう現象を防ぐため、キー入力をスペース1回のみに修正）
+        # 撮影処理
         function Capture-Photo {
             param (
                 [int]$stepIndex
             )
-            # カメラを閉じる
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
-            # シャッターを切る前の時間
             $captureTriggerTime = Get-Date
-            Write-Host "[DEBUG] Step $stepIndex: Capture trigger time is $captureTriggerTime"
+            Write-Host "[DEBUG] Step ${stepIndex} - Capture trigger time: $captureTriggerTime"
 
-            # カメラアプリ起動
             powershell -Command "start microsoft.windows.camera:"
             Start-Sleep -Seconds 3
             
             $wshell = New-Object -ComObject Wscript.Shell
             
-            # カメラを確実にアクティブにする
             for ($attempt = 1; $attempt -le 3; $attempt++) {
                 $activated = $wshell.AppActivate("Camera")
                 if ($activated) {
@@ -260,16 +255,13 @@ jobs:
             }
             Start-Sleep -Seconds 1
             
-            # シャッター押下（重複撮影を防ぐため、スペースキーのみを1回送信）
             Write-Host "[DEBUG] Sending single Space key for shutter..."
             $wshell.SendKeys(" ")
             Start-Sleep -Seconds 2
 
-            # 新しい写真が検出されるのを待つループ
             $afterFile = $null
             $loopCount = 0
             while ($true) {
-                # 基準時間以降に作成された最新のJPGを取得
                 $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | 
                              Where-Object { $_.LastWriteTime -ge $captureTriggerTime } | 
                              Sort-Object LastWriteTime -Descending | 
@@ -284,34 +276,31 @@ jobs:
                 Write-Host "[DEBUG] Checking... elapsed: ${loopCount}s (No new photo yet)"
                 
                 if ($loopCount -eq 4) {
-                    # 4秒経っても撮れていなければ、もう一度フォーカスして再試行
-                    Write-Host "⚠️ [待機中] カメラが反応していない可能性があるため、再度シャッターを切ります。"
+                    Write-Host "[RETRY] Resending shutter key..."
                     [void]$wshell.AppActivate("Camera")
                     $wshell.SendKeys(" ")
                 }
                 
-                # 10秒待っても新しい写真が見つからない場合は、フォールバック（既存の最新JPGを使う）
                 if ($loopCount -ge 10) {
-                    Write-Host "⚠️ [警告] 新しい写真が確認できませんでした。フォールバック処理としてフォルダー内の最新画像を使用します。"
+                    Write-Host "[FALLBACK] Using latest existing photo."
                     $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
                     if ($afterFile) {
-                        Write-Host "[DEBUG] Fallback image found: $($afterFile.Name) (LastModified: $($afterFile.LastWriteTime))"
+                        Write-Host "[DEBUG] Fallback image found: $($afterFile.Name)"
                         break
                     }
-                    throw "カメラロールフォルダ ($cameraRollFolder) 内に写真が1枚も存在しません。"
+                    throw "No JPG photos found in camera roll directory."
                 }
                 
                 Start-Sleep -Seconds 1
             }
 
             $now = Get-Date
-            $timeStr = $now.ToString("yyyy.M.d_H.mm.ss")
+            $timeStr = $now.ToString('yyyy.M.d_H.mm.ss')
             $finalPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${stepIndex}_${timeStr}.jpg")
 
             Start-Sleep -Seconds 1
             Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
 
-            # カメラを閉じる
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
@@ -329,7 +318,8 @@ jobs:
         # 1回目〜3回目（0枚、1枚、2枚）
         $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
         for ($i = 0; $i -lt 3; $i++) {
-            Show-Guide -title "Capturing Step $($i+1)" -msg $instructions1[$i] -graphImgPath $null -isFinal $false
+            $stepDisplay = $i + 1
+            Show-Guide -title "Capturing Step $stepDisplay" -msg $instructions1[$i] -graphImgPath $null -isFinal $false
             $res = Capture-Photo -stepIndex $i
             $path = $res[0]
             $ratio = Get-GreenRatioPercent -path $path
@@ -338,7 +328,7 @@ jobs:
         }
 
         # 中間プロット
-        $midTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
+        $midTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
         $midGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_mid_${midTime}.png")
         Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
         Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
@@ -346,7 +336,8 @@ jobs:
         # 4回目〜5回目（3枚、4枚）
         $instructions2 = @("Place 3 leaves on the desk.", "Place 4 leaves on the desk.")
         for ($i = 3; $i -lt 5; $i++) {
-            Show-Guide -title "Capturing Step $($i+1)" -msg $instructions2[$i-3] -graphImgPath $null -isFinal $false
+            $stepDisplay = $i + 1
+            Show-Guide -title "Capturing Step $stepDisplay" -msg $instructions2[$i-3] -graphImgPath $null -isFinal $false
             $res = Capture-Photo -stepIndex $i
             $path = $res[0]
             $ratio = Get-GreenRatioPercent -path $path
@@ -355,7 +346,7 @@ jobs:
         }
 
         # 最終プロット
-        $finalTime = (Get-Date).ToString("yyyy.M.d_H.mm.ss")
+        $finalTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
         $finalGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_final_${finalTime}.png")
         Save-NegiChart -stepCount 5 -ratioArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
         Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
