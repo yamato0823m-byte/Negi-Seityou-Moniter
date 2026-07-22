@@ -21,44 +21,35 @@ jobs:
 
         $userProfile = $env:USERPROFILE
         
-        # 写真が保存される可能性のある候補フォルダを一覧化
-        $possibleFolders = @(
-            (Join-Path $userProfile "Pictures\Camera Roll"),
-            (Join-Path $userProfile "Pictures\カメラロール"),
-            (Join-Path $userProfile "OneDrive\Pictures\Camera Roll"),
-            (Join-Path $userProfile "OneDrive\ピクチャ\カメラロール"),
-            (Join-Path $userProfile "OneDrive\Pictures\カメラロール")
-        )
-
-        # 実験ログ用・基本出力フォルダの設定（存在しない場合は作成）
-        $baseFolder = Join-Path $userProfile "Pictures\Camera Roll"
-        if (-not (Test-Path $baseFolder)) {
-            New-Item -ItemType Directory -Path $baseFolder -Force | Out-Null
+        # スクリーンショットで確認できた実際の保存先（OneDriveの日本語パス）を最優先指定
+        $cameraRollFolder = Join-Path $userProfile "OneDrive\ピクチャ\カメラロール"
+        
+        # 万が一存在しない場合のバックアップ候補
+        if (-not (Test-Path $cameraRollFolder)) {
+            $cameraRollFolder = Join-Path $userProfile "Pictures\Camera Roll"
         }
 
-        $csvPath = Join-Path $baseFolder "negi_growth_log.csv"
+        Write-Host "--- SYSTEM INFO ---"
+        Write-Host "Target Camera Roll Directory: $cameraRollFolder"
+        Write-Host "-------------------"
+
+        $csvPath = Join-Path $cameraRollFolder "negi_growth_log.csv"
         if (-not (Test-Path $csvPath)) {
             "DateTime,Step,Green_Ratio_Percent,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
 
-        # 全候補フォルダから最新のJPGを探す関数
+        # 最新のJPGを取得する関数
         function Get-LatestPhoto {
             param (
                 [datetime]$afterTime
             )
-            $latestFile = $null
-            foreach ($folder in $possibleFolders) {
-                if (Test-Path $folder) {
-                    $file = Get-ChildItem -Path $folder -Filter "*.jpg" -ErrorAction SilentlyContinue |
-                            Where-Object { $_.LastWriteTime -ge $afterTime } |
-                            Sort-Object LastWriteTime -Descending |
-                            Select-Object -First 1
-                    if ($file -and (-not $latestFile -or $file.LastWriteTime -gt $latestFile.LastWriteTime)) {
-                        $latestFile = $file
-                    }
-                }
+            if (Test-Path $cameraRollFolder) {
+                return Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" -ErrorAction SilentlyContinue |
+                        Where-Object { $_.LastWriteTime -ge $afterTime } |
+                        Sort-Object LastWriteTime -Descending |
+                        Select-Object -First 1
             }
-            return $latestFile
+            return $null
         }
 
         # --- ポップアップ表示関数 ---
@@ -273,7 +264,7 @@ jobs:
             [void]$wshell.AppActivate("カメラ")
             Start-Sleep -Seconds 1
             
-            # 1回だけシャッターを切る（Enterキー）
+            # 1回シャッターを切る
             Write-Host "[DEBUG] Sending 1 shutter key..."
             $wshell.SendKeys("{ENTER}")
 
@@ -288,25 +279,18 @@ jobs:
                 Write-Host "[DEBUG] Waiting for photo save... (${i}s)"
             }
 
+            # 見つからない場合はフォルダ内の最新画像を使用
             if (-not $afterFile) {
-                # 全候補フォルダから過去の一番新しい写真を取得するフォールバック
-                foreach ($folder in $possibleFolders) {
-                    if (Test-Path $folder) {
-                        $f = Get-ChildItem -Path $folder -Filter "*.jpg" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                        if ($f -and (-not $afterFile -or $f.LastWriteTime -gt $afterFile.LastWriteTime)) {
-                            $afterFile = $f
-                        }
-                    }
-                }
+                $afterFile = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             }
 
             if (-not $afterFile) {
-                throw "No photo file detected after capture."
+                throw "No photo file detected in: $cameraRollFolder"
             }
 
             $now = Get-Date
             $timeStr = $now.ToString('yyyy.M.d_H.mm.ss')
-            $finalPath = Join-Path $baseFolder "negi_step_${stepIndex}_${timeStr}.jpg"
+            $finalPath = Join-Path $cameraRollFolder "negi_step_${stepIndex}_${timeStr}.jpg"
 
             Start-Sleep -Seconds 1
             Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
@@ -339,7 +323,7 @@ jobs:
 
         # 中間プロット（3ステップ完了時点）
         $midTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $midGraphPath = Join-Path $baseFolder "negi_graph_mid_${midTime}.png"
+        $midGraphPath = Join-Path $cameraRollFolder "negi_graph_mid_${midTime}.png"
         Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
         Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
 
@@ -357,7 +341,7 @@ jobs:
 
         # 最終プロット（全5ステップ完了時点）
         $finalTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $finalGraphPath = Join-Path $baseFolder "negi_graph_final_${finalTime}.png"
+        $finalGraphPath = Join-Path $cameraRollFolder "negi_graph_final_${finalTime}.png"
         Save-NegiChart -stepCount 5 -ratioArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
         Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
 
