@@ -19,19 +19,21 @@ jobs:
         Add-Type -AssemblyName WindowsBase
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
-        $picturesFolder = [Environment]::GetFolderPath('MyPictures')
-        $cameraRollFolder = [System.IO.Path]::Combine($picturesFolder, "Camera Roll")
+        # OneDriveを回避し、ローカルPCの「C:\Users\ユーザー名\Pictures\Camera Roll」を直接指定
+        $userProfile = $env:USERPROFILE
+        $cameraRollFolder = Join-Path $userProfile "Pictures\Camera Roll"
+
         if (-not (Test-Path $cameraRollFolder)) {
-            New-Item -ItemType Directory -Path $cameraRollFolder | Out-Null
+            New-Item -ItemType Directory -Path $cameraRollFolder -Force | Out-Null
         }
 
         Write-Host "--- SYSTEM INFO ---"
         Write-Host "Target Camera Roll Directory: $cameraRollFolder"
-        $initialFiles = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg"
+        $initialFiles = Get-ChildItem -Path $cameraRollFolder -Filter "*.jpg" -ErrorAction SilentlyContinue
         Write-Host "Current JPG count in folder: $($initialFiles.Count)"
         Write-Host "-------------------"
 
-        $csvPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_growth_log.csv")
+        $csvPath = Join-Path $cameraRollFolder "negi_growth_log.csv"
         if (-not (Test-Path $csvPath)) {
             "DateTime,Step,Green_Ratio_Percent,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
         }
@@ -288,7 +290,7 @@ jobs:
                         Write-Host "[DEBUG] Fallback image found: $($afterFile.Name)"
                         break
                     }
-                    throw "No JPG photos found in camera roll directory."
+                    throw "No JPG photos found in camera roll directory: $cameraRollFolder"
                 }
                 
                 Start-Sleep -Seconds 1
@@ -296,7 +298,7 @@ jobs:
 
             $now = Get-Date
             $timeStr = $now.ToString('yyyy.M.d_H.mm.ss')
-            $finalPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_step_${stepIndex}_${timeStr}.jpg")
+            $finalPath = Join-Path $cameraRollFolder "negi_step_${stepIndex}_${timeStr}.jpg"
 
             Start-Sleep -Seconds 1
             Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
@@ -329,7 +331,7 @@ jobs:
 
         # 中間プロット
         $midTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $midGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_mid_${midTime}.png")
+        $midGraphPath = Join-Path $cameraRollFolder "negi_graph_mid_${midTime}.png"
         Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
         Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
 
@@ -347,7 +349,7 @@ jobs:
 
         # 最終プロット
         $finalTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $finalGraphPath = [System.IO.Path]::Combine($cameraRollFolder, "negi_graph_final_${finalTime}.png")
+        $finalGraphPath = Join-Path $cameraRollFolder "negi_graph_final_${finalTime}.png"
         Save-NegiChart -stepCount 5 -ratioArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
         Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
 
