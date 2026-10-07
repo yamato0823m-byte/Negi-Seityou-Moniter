@@ -19,18 +19,12 @@ jobs:
         Add-Type -AssemblyName WindowsBase
         [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
 
-        # --- システムから直接ピクチャフォルダを取得 ---
         $myPics = [Environment]::GetFolderPath('MyPictures')
         $altPics = Join-Path $env:USERPROFILE "Pictures"
         $altOneDrive = Join-Path $env:USERPROFILE "OneDrive\Pictures"
         
         $searchDirs = @($myPics, $altPics, $altOneDrive) | Select-Object -Unique | Where-Object { Test-Path $_ }
         
-        Write-Host "--- SYSTEM INFO ---"
-        Write-Host "Base Picture Directories:"
-        $searchDirs | ForEach-Object { Write-Host " - $_" }
-
-        # 最新の写真をもとに保存先を特定
         $newestFile = $null
         foreach ($dir in $searchDirs) {
             $file = Get-ChildItem -Path $dir -Filter "*.jpg" -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -44,20 +38,9 @@ jobs:
         }
         
         $baseFolder = $newestFile.DirectoryName
-        Write-Host "Target Camera Roll Directory: $baseFolder"
-        Write-Host "-------------------"
-
         $csvPath = Join-Path $baseFolder "negi_growth_log.csv"
         if (-not (Test-Path $csvPath)) {
             "DateTime,Step,Green_Ratio_Percent,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
-        }
-
-        function Get-LatestPhoto {
-            param ([datetime]$afterTime)
-            return Get-ChildItem -Path $baseFolder -Filter "*.jpg" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LastWriteTime -ge $afterTime } |
-                    Sort-Object LastWriteTime -Descending |
-                    Select-Object -First 1
         }
 
         function Get-AnyLatestPhoto {
@@ -136,7 +119,6 @@ jobs:
             } catch { Write-Warning "Failed to show popup: $_" }
         }
 
-        # 生の緑色面積割合を取得（丸め処理は後で行う）
         function Get-GreenRatioPercent {
             param ([string]$path)
             if (-not (Test-Path $path)) { throw "Image file not found: $path" }
@@ -155,7 +137,6 @@ jobs:
             return ($greenCount / $totalCount) * 100
         }
 
-        # グラフ描画（表示ラベルも「Net Green Area Ratio」に変更）
         function Save-NegiChart {
             param ([int]$stepCount, [double[]]$ratioArray, [string]$timeStr, [string]$outputPath)
             try {
@@ -216,6 +197,10 @@ jobs:
             param ([int]$stepIndex)
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
+            
+            # --- 修正ポイント：撮影前に「現在の最新ファイル」を記憶しておく ---
+            $beforeFile = Get-AnyLatestPhoto
+            
             $captureTriggerTime = Get-Date
             Write-Host "[DEBUG] Step ${stepIndex} - Capture trigger time: $captureTriggerTime"
             powershell -Command "start microsoft.windows.camera:"
@@ -228,18 +213,21 @@ jobs:
             $wshell.SendKeys("{ENTER}")
 
             $afterFile = $null
-            for ($i = 1; $i -le 10; $i++) {
+            # --- 修正ポイント：「記憶した写真」とは違う新しい写真が保存されるまで待つ（最大15秒） ---
+            for ($i = 1; $i -le 15; $i++) {
                 Start-Sleep -Seconds 1
-                $afterFile = Get-LatestPhoto -afterTime $captureTriggerTime
-                if ($afterFile) { Write-Host "[DEBUG] Photo detected at: $($afterFile.FullName)"; break }
-                Write-Host "[DEBUG] Waiting for photo save... (${i}s)"
+                $currentNewest = Get-AnyLatestPhoto
+                if ($currentNewest -and (-not $beforeFile -or $currentNewest.FullName -ne $beforeFile.FullName)) {
+                    $afterFile = $currentNewest
+                    Write-Host "[DEBUG] New photo detected at: $($afterFile.FullName)"
+                    break
+                }
+                Write-Host "[DEBUG] Waiting for NEW photo to save... (${i}s)"
             }
 
-            if (-not $afterFile) {
-                Write-Host "[DEBUG] Fallback to latest photo in candidate folders..."
-                $afterFile = Get-AnyLatestPhoto
+            if (-not $afterFile) { 
+                throw "Error: No new photo was saved. 1枚前の写真を誤認識するのを防ぐため処理を停止しました。" 
             }
-            if (-not $afterFile) { throw "No photo file detected in any candidate folder." }
 
             $now = Get-Date
             $timeStr = $now.ToString('yyyy.M.d_H.mm.ss')
@@ -256,11 +244,9 @@ jobs:
             return ,@($finalPath, $timeStr)
         }
 
-        # === グラフ用データとベースライン（背景ノイズ）の記録 ===
         [double[]]$allRatios = @()
         $baseline = 0.0
 
-        # 1回目〜3回目（0枚、1枚、2枚）
         $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
         for ($i = 0; $i -lt 3; $i++) {
             $stepDisplay = $i + 1
@@ -268,7 +254,6 @@ jobs:
             $res = Capture-Photo -stepIndex $i
             $rawRatio = Get-GreenRatioPercent -path $res[0]
             
-            # アイデアの反映：Step 0（0枚）の緑色割合をベースラインとして記録し、以降引き算する
             if ($i -eq 0) {
                 $baseline = $rawRatio
                 $adjustedRatio = 0.0
@@ -287,7 +272,6 @@ jobs:
         Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
         Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
 
-        # 4回目〜5回目（3枚、4枚）
         $instructions2 = @("Place 3 leaves on the desk.", "Place 4 leaves on the desk.")
         for ($i = 3; $i -lt 5; $i++) {
             $stepDisplay = $i + 1
@@ -295,7 +279,6 @@ jobs:
             $res = Capture-Photo -stepIndex $i
             $rawRatio = Get-GreenRatioPercent -path $res[0]
 
-            # ここでもベースライン（ノイズ）を引き算
             $adjustedRatio = $rawRatio - $baseline
             if ($adjustedRatio -lt 0) { $adjustedRatio = 0.0 }
             $adjustedRatio = [math]::Round($adjustedRatio, 2)
