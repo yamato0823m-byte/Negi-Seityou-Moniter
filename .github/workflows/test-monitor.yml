@@ -1,292 +1,35 @@
-name: Negi Monitor Test
+name: Negi Growth Analysis Pipeline
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - 'photos/*.jpg' # photosフォルダに画像(.jpg)が追加されたら自動起動
 
 jobs:
-  run-monitor:
-    runs-on: self-hosted
+  analyze:
+    runs-on: ubuntu-latest # GitHubの標準クラウド環境（プロキシやローカル依存なし）
 
     steps:
-    - name: 1. Checkout
-      uses: actions/checkout@v4.2.2
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: 2. Step-by-Step Growth Curve Monitor
-      run: |
-        $ErrorActionPreference = "Stop"
-        Add-Type -AssemblyName System.Windows.Forms
-        Add-Type -AssemblyName System.Drawing
-        Add-Type -AssemblyName WindowsBase
-        [void][Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms.DataVisualization")
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-        $myPics = [Environment]::GetFolderPath('MyPictures')
-        $altPics = Join-Path $env:USERPROFILE "Pictures"
-        $altOneDrive = Join-Path $env:USERPROFILE "OneDrive\Pictures"
-        
-        $searchDirs = @($myPics, $altPics, $altOneDrive) | Select-Object -Unique | Where-Object { Test-Path $_ }
-        
-        $newestFile = $null
-        foreach ($dir in $searchDirs) {
-            $file = Get-ChildItem -Path $dir -Filter "*.jpg" -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($file -and (-not $newestFile -or $file.LastWriteTime -gt $newestFile.LastWriteTime)) {
-                $newestFile = $file
-            }
-        }
+      - name: Install dependencies
+        run: |
+          pip install opencv-python matplotlib numpy
 
-        if (-not $newestFile) {
-            throw "Error: No existing JPG photos found in Pictures to determine the save folder."
-        }
-        
-        $baseFolder = $newestFile.DirectoryName
-        $csvPath = Join-Path $baseFolder "negi_growth_log.csv"
-        if (-not (Test-Path $csvPath)) {
-            "DateTime,Step,Green_Ratio_Percent,Fitted_Line_Value" | Out-File -FilePath $csvPath -Encoding utf8
-        }
+      - name: Run Analysis & Plot Graph
+        run: |
+          python analyze_negi.py
 
-        function Get-AnyLatestPhoto {
-            return Get-ChildItem -Path $baseFolder -Filter "*.jpg" -ErrorAction SilentlyContinue |
-                    Sort-Object LastWriteTime -Descending |
-                    Select-Object -First 1
-        }
-
-        function Show-Guide {
-            param ([string]$title, [string]$msg, [string]$graphImgPath, [bool]$isFinal)
-            try {
-                $form = New-Object System.Windows.Forms.Form
-                $form.Text = "NEGI MONITOR REALTIME MONITOR"
-                if ($graphImgPath -and (Test-Path $graphImgPath)) { $form.Size = New-Object System.Drawing.Size(550, 560) } else { $form.Size = New-Object System.Drawing.Size(550, 220) }
-                $form.StartPosition = "CenterScreen"
-                $form.TopMost = $true
-                $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-                $form.FormBorderStyle = "FixedDialog"
-                $form.MaximizeBox = $false
-
-                $lblTitle = New-Object System.Windows.Forms.Label
-                $lblTitle.Text = $title
-                $lblTitle.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
-                $lblTitle.ForeColor = [System.Drawing.Color]::ForestGreen
-                $lblTitle.Size = New-Object System.Drawing.Size(510, 30)
-                $lblTitle.Location = New-Object System.Drawing.Point(20, 20)
-                $lblTitle.TextAlign = "MiddleCenter"
-                $form.Controls.Add($lblTitle)
-
-                $lblMsg = New-Object System.Windows.Forms.Label
-                $lblMsg.Text = $msg
-                $lblMsg.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
-                $lblMsg.ForeColor = [System.Drawing.Color]::White
-                $lblMsg.Size = New-Object System.Drawing.Size(510, 50)
-                $lblMsg.Location = New-Object System.Drawing.Point(20, 60)
-                $lblMsg.TextAlign = "MiddleCenter"
-                $form.Controls.Add($lblMsg)
-
-                if ($graphImgPath -and (Test-Path $graphImgPath)) {
-                    $pictureBox = New-Object System.Windows.Forms.PictureBox
-                    $pictureBox.Size = New-Object System.Drawing.Size(500, 300)
-                    $pictureBox.Location = New-Object System.Drawing.Point(20, 120)
-                    $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::StretchImage
-                    $bytes = [System.IO.File]::ReadAllBytes($graphImgPath)
-                    $ms = New-Object System.IO.MemoryStream(,$bytes)
-                    $pictureBox.Image = [System.Drawing.Image]::FromStream($ms)
-                    $form.Controls.Add($pictureBox)
-                    $timerY = 440
-                } else {
-                    $timerY = 130
-                }
-
-                $lblTimer = New-Object System.Windows.Forms.Label
-                $lblTimer.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
-                $lblTimer.Size = New-Object System.Drawing.Size(510, 30)
-                $lblTimer.Location = New-Object System.Drawing.Point(20, $timerY)
-                $lblTimer.TextAlign = "MiddleCenter"
-                $form.Controls.Add($lblTimer)
-
-                $form.Show()
-                $maxTime = 12
-                for ($countdown = $maxTime; $countdown -gt 0; $countdown--) {
-                    if ($isFinal) {
-                        $lblTimer.ForeColor = [System.Drawing.Color]::LightBlue
-                        $lblTimer.Text = "Closing window in $($countdown)s..."
-                    } else {
-                        $lblTimer.ForeColor = [System.Drawing.Color]::Yellow
-                        $lblTimer.Text = "Remaining: $($countdown)s"
-                    }
-                    [System.Windows.Forms.Application]::DoEvents()
-                    Start-Sleep -Seconds 1
-                }
-                $form.Close()
-                if ($pictureBox) { $pictureBox.Dispose(); $ms.Dispose() }
-                $form.Dispose()
-            } catch { Write-Warning "Failed to show popup: $_" }
-        }
-
-        function Get-GreenRatioPercent {
-            param ([string]$path)
-            if (-not (Test-Path $path)) { throw "Image file not found: $path" }
-            $img = [System.Drawing.Bitmap]::FromFile($path)
-            $greenCount = 0; $totalCount = 0
-            for ($x = 0; $x -lt $img.Width; $x += 2) {
-                for ($y = 0; $y -lt $img.Height; $y += 2) {
-                    $totalCount++
-                    $p = $img.GetPixel($x, $y)
-                    $h = $p.GetHue(); $s = $p.GetSaturation(); $b = $p.GetBrightness()
-                    if (($h -ge 25 -and $h -le 165) -and ($s -ge 0.05) -and ($b -ge 0.03 -and $b -le 0.98)) { $greenCount++ }
-                }
-            }
-            $img.Dispose()
-            if ($totalCount -eq 0) { return 0.0 }
-            return ($greenCount / $totalCount) * 100
-        }
-
-        function Save-NegiChart {
-            param ([int]$stepCount, [double[]]$ratioArray, [string]$timeStr, [string]$outputPath)
-            try {
-                $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
-                $chart.Size = New-Object System.Drawing.Size(500, 320)
-                $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
-                $chartArea.AxisX.Title = "Leaf Count"; $chartArea.AxisX.Interval = 1; $chartArea.AxisX.Minimum = 0; $chartArea.AxisX.Maximum = 4
-                $chartArea.AxisY.Title = "Net Green Area Ratio (%)"
-                $maxVal = 1.0
-                foreach ($val in $ratioArray) { if ($val -gt $maxVal) { $maxVal = $val } }
-                $chartArea.AxisY.Maximum = [math]::Ceiling($maxVal * 1.3)
-                if ($chartArea.AxisY.Maximum -lt 5.0) { $chartArea.AxisY.Maximum = 40.0 }
-                $chartArea.AxisY.Minimum = 0
-                $chart.ChartAreas.Add($chartArea)
-
-                $seriesRaw = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-                $seriesRaw.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Point
-                $seriesRaw.MarkerStyle = [System.Windows.Forms.DataVisualization.Charting.MarkerStyle]::Circle
-                $seriesRaw.MarkerSize = 14; $seriesRaw.MarkerColor = [System.Drawing.Color]::DeepSkyBlue; $seriesRaw.Name = "Actual Area (%)"
-                $chart.Series.Add($seriesRaw)
-
-                $seriesFit = New-Object System.Windows.Forms.DataVisualization.Charting.Series
-                $seriesFit.ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Line
-                $seriesFit.BorderWidth = 3; $seriesFit.Color = [System.Drawing.Color]::OrangeRed; $seriesFit.Name = "Trend Line"
-                $chart.Series.Add($seriesFit)
-
-                $sumX = 0; $sumY = 0; $sumXY = 0; $sumX2 = 0
-                for ($i = 0; $i -lt $stepCount; $i++) {
-                    $x = $i; $y = $ratioArray[$i]
-                    $sumX += $x ; $sumY += $y ; $sumXY += ($x * $y) ; $sumX2 += ($x * $x)
-                }
-                $slope = 0; $intercept = 0
-                if (($stepCount * $sumX2 - $sumX * $sumX) -ne 0) {
-                    $slope = ($stepCount * $sumXY - $sumX * $sumY) / ($stepCount * $sumX2 - $sumX * $sumX)
-                    $intercept = ($sumY - $slope * $sumX) / $stepCount
-                }
-
-                for ($i = 0; $i -lt $stepCount; $i++) {
-                    $seriesRaw.Points.AddXY($i, $ratioArray[$i])
-                    $fitted = [math]::Round(($slope * $i + $intercept), 2)
-                    $seriesFit.Points.AddXY($i, $fitted)
-                    "${timeStr},${i},$($ratioArray[$i]),${fitted}" | Out-File -FilePath $csvPath -Append -Encoding utf8
-                }
-
-                $legend = New-Object System.Windows.Forms.DataVisualization.Charting.Legend
-                $legend.Docking = [System.Windows.Forms.DataVisualization.Charting.Docking]::Bottom
-                $chart.Legends.Add($legend)
-                $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
-                $title.Text = "Leaf Area Ratio Graph (Steps: 1 to $stepCount)"
-                $title.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
-                $chart.Titles.Add($title)
-                $chart.SaveImage($outputPath, [System.Windows.Forms.DataVisualization.Charting.ChartImageFormat]::Png)
-                $chart.Dispose()
-            } catch { Write-Warning "Failed to save chart: $_" }
-        }
-
-        function Capture-Photo {
-            param ([int]$stepIndex)
-            Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 1
-            
-            $beforeFile = Get-AnyLatestPhoto
-            
-            $captureTriggerTime = Get-Date
-            Write-Host "[DEBUG] Step ${stepIndex} - Capture trigger time: $captureTriggerTime"
-            powershell -Command "start microsoft.windows.camera:"
-            Start-Sleep -Seconds 4
-            $wshell = New-Object -ComObject Wscript.Shell
-            [void]$wshell.AppActivate("Camera")
-            [void]$wshell.AppActivate("カメラ")
-            Start-Sleep -Seconds 1
-            Write-Host "[DEBUG] Sending 1 shutter key..."
-            $wshell.SendKeys("{ENTER}")
-
-            $afterFile = $null
-            for ($i = 1; $i -le 15; $i++) {
-                Start-Sleep -Seconds 1
-                $currentNewest = Get-AnyLatestPhoto
-                if ($currentNewest -and (-not $beforeFile -or $currentNewest.FullName -ne $beforeFile.FullName)) {
-                    $afterFile = $currentNewest
-                    Write-Host "[DEBUG] New photo detected at: $($afterFile.FullName)"
-                    break
-                }
-                Write-Host "[DEBUG] Waiting for NEW photo to save... (${i}s)"
-            }
-
-            if (-not $afterFile) { 
-                throw "Error: No new photo was saved." 
-            }
-
-            $now = Get-Date
-            $timeStr = $now.ToString('yyyy.M.d_H.mm.ss')
-            $finalPath = Join-Path $baseFolder "negi_step_${stepIndex}_${timeStr}.jpg"
-            Start-Sleep -Seconds 1
-            Copy-Item -Path $afterFile.FullName -Destination $finalPath -Force
-            Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 1
-            
-            Write-Host "====================="
-            Write-Host "Photo Successfully Processed!"
-            Write-Host "Assigned Path: $finalPath"
-            Write-Host "====================="
-            return ,@($finalPath, $timeStr)
-        }
-
-        [double[]]$allRatios = @()
-        $baseline = 0.0
-
-        $instructions1 = @("Make it 0 leaves on the desk.", "Place 1 leaf on the desk.", "Place 2 leaves on the desk.")
-        for ($i = 0; $i -lt 3; $i++) {
-            $stepDisplay = $i + 1
-            Show-Guide -title "Capturing Step $stepDisplay" -msg $instructions1[$i] -graphImgPath $null -isFinal $false
-            $res = Capture-Photo -stepIndex $i
-            $rawRatio = Get-GreenRatioPercent -path $res[0]
-            
-            if ($i -eq 0) {
-                $baseline = $rawRatio
-                $adjustedRatio = 0.0
-            } else {
-                $adjustedRatio = $rawRatio - $baseline
-                if ($adjustedRatio -lt 0) { $adjustedRatio = 0.0 }
-            }
-            
-            $adjustedRatio = [math]::Round($adjustedRatio, 2)
-            $allRatios += $adjustedRatio
-            Write-Host "Step $i - Raw: $rawRatio %, Baseline Noise: $baseline %, Adjusted: $adjustedRatio %"
-        }
-
-        $midTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $midGraphPath = Join-Path $baseFolder "negi_graph_mid_${midTime}.png"
-        Save-NegiChart -stepCount 3 -ratioArray $allRatios -timeStr $midTime -outputPath $midGraphPath
-        Show-Guide -title "MID-EXPERIMENT GRAPH (0-2 Leaves)" -msg "Calculated first 3 steps!" -graphImgPath $midGraphPath -isFinal $false
-
-        $instructions2 = @("Place 3 leaves on the desk.", "Place 4 leaves on the desk.")
-        for ($i = 3; $i -lt 5; $i++) {
-            $stepDisplay = $i + 1
-            Show-Guide -title "Capturing Step $stepDisplay" -msg $instructions2[$i-3] -graphImgPath $null -isFinal $false
-            $res = Capture-Photo -stepIndex $i
-            $rawRatio = Get-GreenRatioPercent -path $res[0]
-
-            $adjustedRatio = $rawRatio - $baseline
-            if ($adjustedRatio -lt 0) { $adjustedRatio = 0.0 }
-            $adjustedRatio = [math]::Round($adjustedRatio, 2)
-            
-            $allRatios += $adjustedRatio
-            Write-Host "Step $i - Raw: $rawRatio %, Baseline Noise: $baseline %, Adjusted: $adjustedRatio %"
-        }
-
-        $finalTime = (Get-Date).ToString('yyyy.M.d_H.mm.ss')
-        $finalGraphPath = Join-Path $baseFolder "negi_graph_final_${finalTime}.png"
-        Save-NegiChart -stepCount 5 -ratioArray $allRatios -timeStr $finalTime -outputPath $finalGraphPath
-        Show-Guide -title "FINAL EXPERIMENT GRAPH (0-4 Leaves)" -msg "All 5 steps plotted successfully!" -graphImgPath $finalGraphPath -isFinal $true
-        exit 0
+      - name: Commit and Push Graph
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add photos/negi_growth_graph.png
+          git commit -m "Update growth graph [skip ci]" || exit 0
+          git push
