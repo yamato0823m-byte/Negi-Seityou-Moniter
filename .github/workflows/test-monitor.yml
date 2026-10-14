@@ -3,11 +3,12 @@ name: Negi Growth Analysis Pipeline
 on:
   push:
     paths:
-      - 'photos/*.jpg' # photosフォルダに画像(.jpg)が追加されたら自動起動
+      - 'photos/*.jpg'
+  workflow_dispatch:
 
 jobs:
   analyze:
-    runs-on: ubuntu-latest # GitHubの標準クラウド環境（プロキシやローカル依存なし）
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
