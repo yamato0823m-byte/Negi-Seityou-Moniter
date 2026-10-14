@@ -198,7 +198,6 @@ jobs:
             Stop-Process -Name "Camera" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             
-            # --- 修正ポイント：撮影前に「現在の最新ファイル」を記憶しておく ---
             $beforeFile = Get-AnyLatestPhoto
             
             $captureTriggerTime = Get-Date
@@ -213,7 +212,6 @@ jobs:
             $wshell.SendKeys("{ENTER}")
 
             $afterFile = $null
-            # --- 修正ポイント：「記憶した写真」とは違う新しい写真が保存されるまで待つ（最大15秒） ---
             for ($i = 1; $i -le 15; $i++) {
                 Start-Sleep -Seconds 1
                 $currentNewest = Get-AnyLatestPhoto
@@ -226,7 +224,7 @@ jobs:
             }
 
             if (-not $afterFile) { 
-                throw "Error: No new photo was saved. 1枚前の写真を誤認識するのを防ぐため処理を停止しました。" 
+                throw "Error: No new photo was saved." 
             }
 
             $now = Get-Date
